@@ -43,6 +43,8 @@ V10 之后的内容只用于标明可能的高级方向。其实现方式必须�
 7. 只有当重复、耦合或扩展困难已经在代码中出现并能被测试证明时，才进行抽象或重构。
 8. V01–V09 不为 MCP、Plugin、Workflow、多 Agent 等未来能力预留接口。
 
+从 V02 开始，`TOOLS + TOOL_HANDLERS` 是当前多工具需求所需的最小数据结构，不视为提前创建通用 Registry 或 Dispatcher 框架。`TOOL_HANDLERS` 仅为 `dict[str, Callable]` 的静态 handler map；上述原则仍然禁止没有真实需求支撑的 Registry 类、动态注册、自动发现、插件系统和其他扩展框架。
+
 ### 2.1 版本继承规则
 
 本项目采用能力累加式演进，而不是互相孤立、每版从零重写的教学 Demo：
@@ -54,6 +56,8 @@ V10 之后的内容只用于标明可能的高级方向。其实现方式必须�
 5. 如果当前需求确实暴露出上一版设计的问题，允许做最小必要重构，但 README 必须记录触发问题、修改范围和为什么不能继续沿用原设计。
 6. 每版完成后必须说明相对上一版“新增了什么、修改了什么、保留了什么”。
 7. `learn-claude-code` 用作概念和具体实现参考；本项目自己的 V01→V09 保持连续累加，不要求照搬其 lesson 之间的代码组织方式。
+8. V02 完成并通过自动测试和手动验收后，`TOOLS + TOOL_HANDLERS + 通用 Agent Loop` 构成 V03 及后续版本的已验证 Tool Runtime baseline。后续新增普通工具时，原则上只增加工具 schema/definition、handler function 和 `tool_name -> handler` 映射，不把具体工具的 `if/elif` 分发重新写回 Agent Loop，也不无理由重写 Tool Runtime。
+9. 只有后续版本出现真实需求并证明静态 handler map 无法满足时，才允许继续演进 Tool Registry、Tool Definition 或其他更复杂结构。README 必须说明当前结构遇到的真实问题、handler map 为什么不足、最小需要增加的抽象，以及必须保持兼容的已有行为。
 
 每版完成后必须停下，不自动进入下一版：
 
@@ -216,6 +220,15 @@ MODEL_ID=<当前服务支持的实际模型 ID>
 
 该约定只固定模型接入边界，不改变 V01–V15 的 Agent Loop、Tool、Permission、State、Context 等学习路线。
 
+### 3.4 Agent Loop 最大轮次约定
+
+- V01 保留其已经验收的历史实现；从 V02 开始，当前版本及后续版本统一使用 `MAX_ROUNDS = 20` 作为 Agent Loop 的默认最大轮次。
+- `MAX_ROUNDS = 20` 是 Runtime 防止模型无限 Tool Use 或死循环的安全上限，不是目标轮数；正常任务应尽可能更早完成并返回最终文本。
+- 达到第 20 轮仍未结束时，当前 run 必须明确返回 `MAX_ROUNDS_EXCEEDED`，并保留既有错误记录、CLI 展示和 JSONL Observability。
+- 如果真实任务频繁接近或达到 20 轮，必须优先检查模型行为、System Prompt、工具设计和 Tool Result，不以继续无条件提高上限掩盖问题。
+- 后续只有真实任务证明 20 轮不足时，才允许再次调整；README 必须记录触发任务、实际轨迹、为什么现有上限不足、调整幅度以及回归验证结果。
+- 后续版本继承该默认值和失败语义，不得在复制上一版时无理由改回更低或更高的写死值。
+
 ## 4. 贯穿式 Observability
 
 Observability 从 V01 开始存在，但不单独占一个业务版本。
@@ -263,9 +276,31 @@ CLI 以清晰为目标，可展示：
 [Run End] status=completed rounds=...
 ```
 
+CLI Tool Rendering 必须把“返回给模型的 Tool Result”与“展示给用户的工具摘要”分离：
+
+- handler 的完整、正确结果由 Runtime 原样构造为 `tool_result` 返回 LLM；不得因 CLI 展示而截断、改写或改变语义。
+- CLI 不直接打印 handler 原始返回值或长 Tool Result，只展示理解 Agent 行为所需的简洁摘要；短结果可完整展示，长结果必须摘要。
+- `Tool Call` 摘要优先显示工具名和关键参数；`Tool Result` 摘要优先显示 success/error、结果数量、字符/行数、`exit_code`、耗时和有限 preview。preview 必须有明确的小上限，不得再次形成大段输出。
+- CLI 在支持颜色的 TTY 中，对完整的 `[Tool Call] <tool_name>` 使用统一高亮色；后续关键参数和其他 CLI 文字保持默认终端颜色。所有现有和后续新增工具继承同一颜色，不按工具建立不同配色。
+- 当输出不是 TTY、终端声明不支持颜色或用户设置 `NO_COLOR` 时，工具名自动退化为普通纯文本；重定向输出和 JSONL 中不得出现 ANSI 转义序列。
+- 错误展示必须保留 error code 和关键错误摘要，例如 `[Tool Result] error=FILE_NOT_FOUND | file does not exist: missing.txt`。
+- JSONL 与 CLI 使用同一运行事实，但只记录结构化的参数/结果摘要、原始长度和是否截断；不保存大段原始结果或文件内容。
+- 新增任何普通工具时，必须同时定义其 CLI Tool Call 和 Tool Result 摘要展示方式；尚无专用格式时至少使用有限长度的通用 fallback，不得默认 dump 原始结果。
+- 该规范属于 CLI/Observability 层，不改变 Agent Loop、`TOOLS`、`TOOL_HANDLERS`、handler 执行结果或 Anthropic `tool_result` 协议，也不因摘要或颜色引入复杂 CLI Framework、Renderer Framework 或 Renderer Registry。
+
+推荐的统一形式为：
+
+```text
+[Tool Call] <tool_name> <关键参数摘要>
+[Tool Result] <success/error> | <关键结果摘要>
+```
+
 - 不使用 `[Thinking] 正在分析任务...` 等文案声称或暗示 Runtime 能看到模型隐藏思维过程。
 - 模型请求等待阶段统一显示为 `[LLM] requesting ...`，只表示请求已经发出并正在等待响应。
 - 模型返回后，`[LLM Result]` 显示本次调用可观测摘要，包括实际可得的 `model`、`round`、`duration`、`input_tokens`、`output_tokens`、`stop_reason` 和 `tool_calls`。
+- 项目 Observability 中的 `input_tokens` 表示当前单次 LLM 请求实际处理的输入 token 总量，统一计算为 `usage.input_tokens + usage.cache_creation_input_tokens + usage.cache_read_input_tokens`，缺失字段按 0 处理。CLI 和 JSONL 必须使用同一计算结果。
+- `input_tokens` 用于观察每轮 Agent Loop 的单次输入规模，不表示整个 session 的累计 token，当前也不作为 Context Window 精确管理指标。Context Budget、tokenizer、Compact 和 session 累计属于后续 Context Management 版本，不在基础 Observability 中提前实现。
+- `output_tokens` 继续表示 API `usage.output_tokens` 返回的当次模型输出 token，不改变现有含义。
 - 只展示 Runtime 自身计算或 API 响应明确提供的数据；缺失字段不伪造、不推测。
 - 后续所有版本继承此规范。除非未来 API 明确返回可向用户展示的 reasoning 内容，否则不得将等待状态或推测内容标记为 Thinking。
 
@@ -372,11 +407,46 @@ Agent 如何观察和修改工作区，并以一致方式把工具成功或失�
 
 **问题驱动实现要求**
 
-- 先用最简单清楚的数据结构和调用分支完成工具。
+- V01 已验证的 Agent Loop 核心结构继续保留；V02 只把“Agent Loop 硬编码知道每一种工具”改为“Agent Loop 理解统一的 `tool_use` 协议，并按名称查表执行 handler”。
+- V02 按全局 Agent Loop 最大轮次约定使用 `MAX_ROUNDS = 20`；达到上限仍返回 `MAX_ROUNDS_EXCEEDED`，不改变既有错误记录和 Observability。
+- `TOOLS` 保存提供给模型的工具 definition/schema；`TOOL_HANDLERS` 保存 `tool_name -> handler function` 的静态映射。
+- Agent Loop 从每个 `tool_use` block 取得 `name` 和 `input`，通过 `TOOL_HANDLERS.get(name)` 查找 handler；`tool_use.input` 统一以 `dict`/object 形式交给 handler。
+- handler 完成后由 Runtime 统一构造与 `tool_use_id` 匹配的 Anthropic `tool_result`，追加回 `messages`，再进入下一轮 LLM。
+- 查不到 handler 时统一进入 `UNKNOWN_TOOL` 错误路径，并以可恢复的错误 Tool Result 返回模型。
+- 新增普通工具时，原则上只需在 `TOOLS` 增加 schema/definition、实现 handler function，并在 `TOOL_HANDLERS` 增加映射；不得要求继续修改 Agent Loop 中针对具体工具的分发分支。
+- V02 从第一版开始使用 `TOOL_HANDLERS` 查表分发，不采用针对 `bash`、`read_file`、`write_file`、`edit_file`、`glob`、`grep` 的 `if/elif` 硬编码分发。
 - 不以“未来要接 MCP”为理由提前建立通用 Tool Protocol。
 - 不以“工具会很多”为理由提前建立插件系统。
-- 如果增加多个工具后，重复校验、分发分支或错误包装已经明显影响理解和测试，再在 V02 内做最小提炼。
-- Registry、Dispatcher 不是预设交付物；只有代码实际证明需要时才出现，并在 README 记录触发重构的具体问题。
+- `TOOL_HANDLERS` 只实现为 `dict[str, Callable]` 的最小 handler map，不引入 ToolRegistry class、动态注册/注销、自动工具发现、Plugin System、MCP、复杂依赖注入或为未来版本预留的大量抽象接口。
+- 工具参数校验、执行结果和错误包装仍采用当前需求下最直接的实现；只有实际重复、耦合或测试困难证明需要时，才做最小提炼并在 README 记录触发问题。
+
+**Tool Runtime 基本结构**
+
+```python
+TOOLS = [
+    # Anthropic tool definitions / schemas
+]
+
+TOOL_HANDLERS = {
+    "bash": run_bash,
+    "read_file": run_read_file,
+    "write_file": run_write_file,
+    "edit_file": run_edit_file,
+    "glob": run_glob,
+    "grep": run_grep,
+}
+```
+
+```text
+LLM response
+→ tool_use block
+→ name + input
+→ TOOL_HANDLERS.get(name)
+→ handler(input)
+→ Runtime 构造 tool_result
+→ 追加回 messages
+→ 下一轮 LLM
+```
 
 **安全底线**
 
