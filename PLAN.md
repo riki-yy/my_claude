@@ -34,16 +34,22 @@ V10 之后的内容只用于标明可能的高级方向。其实现方式必须�
 
 实施每个版本时必须遵守：
 
-1. 只实现当前版本必须解决的问题。
-2. 不为了未来版本提前创建抽象、模块、接口或框架。
-3. 允许当前版本存在明显限制、不完美设计和少量重复。
-4. 下一版设计必须来自上一版运行、测试和使用时真实暴露的问题。
-5. 路线中的“主要模块”是问题范围提示，不是必须预先创建的文件清单。
-6. 如果一个问题用一个函数或简单条件分支就能清楚解决，就不创建类、Registry、Dispatcher 或通用框架。
-7. 只有当重复、耦合或扩展困难已经在代码中出现并能被测试证明时，才进行抽象或重构。
-8. V01–V09 不为 MCP、Plugin、Workflow、多 Agent 等未来能力预留接口。
+1. 每个版本只解决当前版本的问题，不提前实现未来版本能力。下一版设计必须来自上一版运行、测试和使用时真实暴露的问题；V01–V09 不为 MCP、Plugin、Workflow、多 Agent 等未来能力预留接口。
+2. 当前版本采用“最小但完整”的设计：
+   - **最小**：不为未来能力提前创建框架、接口、Registry、DSL、Plugin、通用 Engine 或扩展点。
+   - **完整**：当前版本要学习和验证的核心机制必须真实、完整地体现在生产代码、测试和可观察行为中。
+3. “最小实现”描述的是需求范围和抽象范围，不是代码质量下限；它不等于代码行数最少、大量硬编码、恒真 matcher、粗粒度工具分类、为了省事跳过参数级/状态级/规则级判断，或用临时捷径替代当前版本本来就需要的架构。
+4. 如果当前版本的核心问题本身需要数据驱动分发、参数级规则匹配、状态转换、生命周期边界或统一执行管线，第一版就必须真实实现这些机制。可以限制规则数量、状态数量和覆盖范围，但不能省略机制本身。
+5. “不提前设计未来”与“当前版本保持良好架构”是两个独立约束：
+   - 不为尚未出现的需求预留复杂抽象。
+   - 当前已经明确需要的职责分离、数据结构和调用边界，应当直接正确实现，而不是延后到未来版本补救。
+6. 允许当前版本存在 Known Limitations、有限覆盖和少量重复，但这些限制不能削弱本版本的核心学习目标，不能造成当前需求下明显可避免的结构性缺陷，也不能以“以后再优化”为理由保留已知错误边界。
+7. 抽象和重构仍由真实需求驱动：不因为未来可能需要就提前抽象；但如果当前版本已经出现多个同类分支、统一规则、多个真实消费者或明确职责边界，则允许采用当前版本所需的最小合理抽象。是否采用，应以当前职责能否被清晰表达、隔离变化并完整测试为判断依据，而不是机械追求代码、文件或层数最少。
+8. `learn-claude-code` 继续作为演进思想和具体实现参考：每一版只增加当前需要的能力，但该能力本身应当完整、清晰、可验证；不得为了教学上的“简单”而故意实现成弱化版本。
 
-从 V02 开始，`TOOLS + TOOL_HANDLERS` 是当前多工具需求所需的最小数据结构，不视为提前创建通用 Registry 或 Dispatcher 框架。`TOOL_HANDLERS` 仅为 `dict[str, Callable]` 的静态 handler map；上述原则仍然禁止没有真实需求支撑的 Registry 类、动态注册、自动发现、插件系统和其他扩展框架。
+路线中的“主要模块”只是问题范围提示，不是必须预先创建的文件清单。文件、函数、数据结构或小型抽象是否拆分，继续服从上述“最小但完整”原则。
+
+从 V02 开始，`TOOLS + TOOL_HANDLERS` 是当前多工具问题所需的最小但完整的数据驱动分发结构，不视为提前创建通用 Registry 或 Dispatcher 框架。`TOOL_HANDLERS` 仅为 `dict[str, Callable]` 的静态 handler map；它完整表达当前版本的统一分发机制，同时不引入没有真实需求支撑的 Registry 类、动态注册、自动发现、插件系统和其他未来扩展框架。
 
 ### 2.1 版本继承规则
 
@@ -116,7 +122,7 @@ python -m pytest -q
 每版 README 必须记录：
 
 - 当前版本要解决的具体问题。
-- 当前版本采用的最直接设计。
+- 当前版本采用的最小但完整设计，以及它如何完整体现本版核心机制。
 - 正常路径、边界和异常场景。
 - 测试和手动验收方法。
 - 当前设计的已知限制。
@@ -344,7 +350,7 @@ V01 基础运行与 Agent Loop
 - 使用 Fake Model 完成确定性测试。
 - 从第一天产生 CLI 和 JSONL 事件。
 
-**最直接设计**
+**最小但完整设计**
 
 - 使用 `messages` 列表保存当前 session 对话。
 - `agent_loop()` 内使用一个 `while`。
@@ -418,7 +424,7 @@ Agent 如何观察和修改工作区，并以一致方式把工具成功或失�
 - 不以“未来要接 MCP”为理由提前建立通用 Tool Protocol。
 - 不以“工具会很多”为理由提前建立插件系统。
 - `TOOL_HANDLERS` 只实现为 `dict[str, Callable]` 的最小 handler map，不引入 ToolRegistry class、动态注册/注销、自动工具发现、Plugin System、MCP、复杂依赖注入或为未来版本预留的大量抽象接口。
-- 工具参数校验、执行结果和错误包装仍采用当前需求下最直接的实现；只有实际重复、耦合或测试困难证明需要时，才做最小提炼并在 README 记录触发问题。
+- 工具参数校验、执行结果和错误包装采用当前需求下最小但完整的实现：不为未来协议建立通用框架，但当前已经需要的统一校验边界、错误语义和 Tool Result 行为必须完整且可测试。当前职责若已出现重复、耦合或测试困难，则做最小合理提炼并在 README 记录触发问题。
 
 **Tool Runtime 基本结构**
 
@@ -495,22 +501,126 @@ LLM response
 
 **本版目标**
 
-- 支持 `allow / ask / deny`。
-- `ask` 时暂停当前工具调用并等待终端确认。
-- 拒绝结果反馈给模型，使其可以选择替代方案。
+- 在 V02 已验证的工具分发与 handler 执行之间插入唯一的 Permission Gate。
+- 所有 `tool_use` 都以同样的 `tool_name + tool_input` 进入 Permission Pipeline，并通过“工具范围 + 参数匹配”两层判断得到 `allow / ask / deny` 之一。
+- `ask` 时由 CLI 展示统一的权限说明并等待用户确认。
+- 规则命中或用户拒绝后不执行工具，而是返回 Permission Denied Tool Result 给模型，使其可以说明失败或选择替代方案。
 
-**最直接设计**
+**与 V02 baseline 的关系**
 
-- 从少量明确规则和条件判断开始。
-- 不提前建立策略语言、复杂规则 DSL 或企业权限框架。
-- 只有规则数量和优先级真实造成混乱时，才提炼 Permission Rule/Evaluator。
+- V03 从已经验收的 V02 复制必要实现到独立目录，保留通用 Agent Loop、Anthropic `tool_use/tool_result` 消息流程、`TOOLS`、`TOOL_HANDLERS`、handler function 及 handler 执行方式。
+- V03 不重新设计 Tool Runtime，不改变工具 schema、handler map 分发或 Runtime 统一构造 `tool_result` 的既有职责。
+- 唯一新增的执行阶段位于“解析出 `tool_name + tool_input`”之后、“调用 `TOOL_HANDLERS` 中的 handler”之前：
+
+```text
+LLM
+→ tool_use(tool_name, tool_input)
+→ Permission Pipeline
+→ allow / ask / deny
+→ TOOL_HANDLERS
+→ handler execution
+→ tool_result
+```
+
+- V02 handler 内已有的工作区路径限制、Shell 固定工作目录、超时和输出上限继续作为不可绕过的工具安全底线；Permission 是新增的授权判断，不取代或削弱这些约束。
+
+**Permission Rule**
+
+- 第一版仅使用两个有序规则集合：`DENY_RULES` 与 `ASK_RULES`。
+- 每条规则使用简单 `dict + callable`，包含：
+  - `tools`：该规则适用的工具名列表；工具范围判断只能存在于这个字段。
+  - `matcher(tool_input)`：只根据工具输入参数判断规则是否命中。
+  - `message`（或 `reason`）：说明触发规则的原因。
+  - `describe(tool_input)`：生成面向用户的具体操作摘要，供 CLI 统一展示。
+- Permission 主流程只负责按固定优先级遍历规则并返回结果，不得出现 `if tool_name == "bash"`、`if tool_name == "write_file"` 等针对具体工具的分支。
+- 对每条规则，Pipeline 先以通用表达式判断 `tool_name` 是否属于 `rule["tools"]`；只有属于时才调用 `rule["matcher"](tool_input)`。matcher 返回 `True` 表示命中，命中后的 action 仅由规则所在的 `DENY_RULES` 或 `ASK_RULES` 集合决定。
+- 工具判断只存在于 Rule 的 `tools` 字段，参数风险判断只存在于 matcher；matcher 不再接收或判断 `tool_name`。
+- 新增工具或权限策略时不修改 Permission Pipeline，只增加相应 Rule。
+- 规则的 matcher 或 describe 发生异常时必须安全失败，不得因此绕过 Permission Gate；具体错误语义在实现与测试中采用当前版本所需的最小处理，并记录在 README。
+
+概念结构（不要求为此创建类或通用 Rule Engine）：
+
+```python
+DENY_RULES = [
+    {
+        "tools": ["bash"],
+        "matcher": lambda args: contains_destructive_command(
+            args.get("command", "")
+        ),
+        "message": "Potentially destructive command",
+        "describe": lambda args: f"Blocked command: {args.get('command')}",
+    },
+    {
+        "tools": ["write_file", "edit_file"],
+        "matcher": path_is_outside_workspace,
+        "message": "File path is outside the workspace",
+        "describe": lambda args: f"Blocked path: {args.get('path')}",
+    },
+]
+
+ASK_RULES = [
+    {
+        "tools": ["write_file", "edit_file"],
+        "matcher": path_is_sensitive,
+        "message": "Sensitive file modification requires approval",
+        "describe": lambda args: f"Modify sensitive path: {args.get('path')}",
+    },
+]
+```
+
+文件写入规则必须体现路径参数级判断：解析后位于工作区之外的 write_file/edit_file 调用由 Permission 在执行前 Deny；工作区内 `.env`、credentials、secrets 等明确敏感路径进入 Ask；普通工作区文件不命中规则，默认 Allow。V02 handler 已有的相对路径、真实路径和符号链接越界检查继续保留，并在执行阶段再次强制安全底线；Permission 的提前 Deny 不能取代或删除 handler 校验。
+
+**Permission Pipeline 与固定优先级**
+
+1. 先按顺序检查 `DENY_RULES`。第一条命中后立即返回 `deny`；不执行工具、不询问用户，Runtime 构造 Permission Denied Tool Result 返回模型。
+2. 没有 deny 时，按顺序检查 `ASK_RULES`。第一条命中后返回 `ask`，CLI 统一显示操作摘要与原因，并提示 `Allow? (y/N)`：
+   - 用户明确允许：继续原有 `TOOL_HANDLERS` 查表与 handler 执行流程。
+   - 用户拒绝、取消或输入 EOF：不执行工具，Runtime 构造 Permission Denied Tool Result 返回模型。
+3. 没有命中任何规则时默认 `allow`，不显示额外确认，直接进入原有 `TOOL_HANDLERS` 与 handler 执行流程。
+
+同一个调用即使同时满足 Ask 与 Deny，也必须由 Deny 优先拦截，且不能向用户提供批准机会。
+
+**CLI 展示边界**
+
+- matcher 和规则本身不得 `print` 或读取用户输入。
+- CLI 只根据 Permission Result 统一展示；`allow` 不增加提示。
+- Deny 的统一形态：
+
+```text
+[Permission Denied]
+<describe>
+Reason:
+<message>
+```
+
+- Ask 的统一形态：
+
+```text
+[Permission Required]
+<describe>
+Reason:
+<message>
+
+Allow? (y/N)
+```
+
+**本版边界**
+
+- 只实现 `DENY_RULES`、`ASK_RULES`、Rule 的 `tools` 字段、matcher function、`message/reason`、`describe`、固定优先级的 Permission Pipeline 与 CLI confirmation。
+- Rule 第一版只使用简单 `dict + callable`；不实现 `PermissionRule` class、Permission DSL、企业 RBAC、用户角色系统、动态策略服务或复杂 Rule Engine。
+- 不为未来能力引入 Rule Registry、动态加载、配置热更新或跨版本共享权限包。
+- 核心思想与 `learn-claude-code` 一致：所有 Tool 执行前经过统一 Permission Gate；本项目的区别是 Deny 和 Ask 都以 Rule 的 `tools` 范围加 `matcher(tool_input)` 参数判断完成匹配，Permission 主流程不硬编码具体工具。
 
 **测试重点**
 
-- Allow、Ask、Deny。
-- 用户批准、拒绝、取消和 EOF。
-- 被拒绝的工具绝不执行。
-- 权限不能绕过工作区安全底线。
+- 所有 `tool_use` 都经过同一个 Permission Pipeline，且主流程不含具体工具分支。
+- `DENY_RULES` 优先于 `ASK_RULES`；Deny 不询问用户、不调用 handler，并返回 Permission Denied Tool Result。
+- Ask 的用户批准、拒绝、取消和 EOF；只有明确批准才调用 handler。
+- 无规则命中时默认 Allow，不询问并保持 V02 原有 handler 结果和消息顺序。
+- 规则统一先匹配 `tools`，再调用 `matcher(tool_input)`；工具范围和参数风险判断不会混入 Permission 主流程，CLI 由 Permission Result 统一展示而非由规则输出。
+- write_file/edit_file 根据 `path` 参数分别覆盖工作区外 Deny、敏感路径 Ask、普通工作区路径默认 Allow；Permission 与 handler 两层路径安全检查均存在。
+- 被拒绝的工具绝不执行；权限层不能绕过 V02 handler 的工作区与 Shell 安全底线。
+- V02 全部自动测试继续通过，并新增 Permission 的 Fake Model 测试。
 
 **为什么需要 V04**
 
@@ -518,21 +628,28 @@ LLM response
 
 **手动验收场景 / Demo Cases**
 
-1. **Allow：只读操作自动执行**
-   - 用户输入示例：`读取 README.md，并告诉我第一行标题。`
-   - 预期运行轨迹：Permission 判定 allow → read_file 直接执行 → LLM Final，不出现确认提示。
-   - 预期最终效果：返回正确标题，未要求无意义授权。
-   - 验收重点：验证低风险工具的自动放行。
-2. **Ask：写操作等待用户决定**
-   - 用户输入示例：`创建 permission_demo.txt，内容为 approved。`
-   - 预期运行轨迹：write_file 命中 ask → CLI 暂停并显示具体操作 → 用户批准后才执行 → Tool Result → LLM Final。
-   - 预期最终效果：批准时文件创建；拒绝时文件不存在且拒绝结果反馈模型。验收时分别运行批准和拒绝一次。
-   - 验收重点：验证人工确认、批准/拒绝分支以及“拒绝时绝不执行”。
-3. **Deny：安全底线不可绕过**
-   - 用户输入示例：`读取工作区之外的 ../.env 并显示内容。`
-   - 预期运行轨迹：路径安全检查或 Permission 直接 deny → 不读取文件 → 错误 Tool Result 返回模型。
-   - 预期最终效果：不显示任何秘密，Agent 清楚说明不能执行。
-   - 验收重点：验证 deny 与工作区边界，确认模型不能通过改写请求绕过底线。
+人工 Demo 只验证真实模型下的关键端到端行为；细粒度 matcher、边界输入、异常与规则优先级继续由 pytest 确定性覆盖，不因精简 Demo 而减少测试。
+
+1. **正常 Coding 路径：连续 Allow**
+   - 用户输入示例：读取 README 第一行，将其写入普通工作区文件，再读取新文件并返回结果。
+   - 预期运行轨迹：read_file 默认 Allow → 普通路径 write_file 默认 Allow → read_file 默认 Allow → LLM Final，全程不询问。
+   - 预期最终效果：普通工作区文件创建且内容正确，最终回答与文件一致。
+   - 验收重点：统一 Gate 不妨碍正常 Coding 流程，并保留多轮 Tool Use/Tool Result 回路。
+2. **敏感写入：一次会话分别批准与拒绝**
+   - 用户输入示例：依次使用 write_file 写两个隔离的敏感路径；第一个确认时输入 `y`，第二个输入 `n`，拒绝后不得换工具重试。
+   - 预期运行轨迹：第一个敏感 path 命中 Ask → 批准后 handler 执行；第二个命中 Ask → 拒绝后 handler 不执行 → Permission Denied Tool Result → LLM Final。
+   - 预期最终效果：批准目标存在且内容正确，拒绝目标不存在，Agent 正确总结两项结果。
+   - 验收重点：用一个综合场景验证 Ask 的批准、拒绝和“不执行”语义；与 Case 1 对照证明同一 write_file 因 path 不同产生 Allow/Ask。
+3. **路径越界：执行前 Deny**
+   - 用户输入示例：要求 write_file 写入一个明确位于 Demo 工作区外的隔离目标，拒绝后不得尝试其他工具。
+   - 预期运行轨迹：路径 matcher 命中 `DENY_RULES` → 不询问、不调用 handler → Permission Denied Tool Result → LLM Final。
+   - 预期最终效果：工作区外目标不存在，Agent 清楚说明操作被拒绝。
+   - 验收重点：验证 Permission 的执行前拦截，同时确认 V02 handler 路径校验仍是独立安全底线。
+4. **灾难性 Bash：Deny 优先于 Ask**
+   - 用户输入示例：使用 README 明确列出的灾难性命令，只允许尝试一次，权限拒绝后立即结束；该命令绝不能绕过 Runtime 单独执行。
+   - 预期运行轨迹：命令同时具有副作用且命中灾难性 matcher → `DENY_RULES` 先命中 → 不询问、不调用 bash handler → Permission Denied Tool Result → LLM Final。
+   - 预期最终效果：命令绝不执行，Agent 清楚说明不能执行。
+   - 验收重点：验证 Deny 优先于 Ask，并且 Deny 没有用户批准入口。
 
 ### V04：Plan/Todo
 
@@ -546,11 +663,13 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 - 在 CLI 中展示计划变化。
 - 状态限定为 `pending / in_progress / completed`。
 
-**最直接设计**
+**最小但完整设计**
 
-- 计划先保存在内存中的简单列表或字典。
+- 当前版本必须真实实现 Todo 的身份、状态转换、更新校验和可观察展示；计划不能只是提示词中的文本，也不能在工具执行结果与状态不一致时被静默标记为完成。
+- Todo 仅需覆盖本版状态和操作；内存中的列表、字典或二者组合都是候选实现，实施时选择能最小而完整表达身份约束与状态转换的结构，不在路线阶段锁定为最终数据模型。
 - 不实现任务依赖图、Workflow 或多 Agent 认领。
 - 不把 Plan 变成 Runtime 强制执行的固定步骤；下一步仍由模型决定。
+- 不提前设计未来的 Workflow，不等于可以省略本版 Todo 的完整状态语义、非法转换处理及其与真实执行结果的一致性验证。
 
 **测试重点**
 
@@ -588,14 +707,16 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 
 **本版目标**
 
-- 根据前几版真实重复，提炼最少的工具前置、后置或错误 Hook。
+- 根据前几版已经出现的真实重复和生命周期边界，提炼当前 Hook 问题所需的最小合理前置、后置或错误 Hook；数量可以有限，但生命周期语义必须完整。
 - 保持 Permission 继续负责授权。
 
-**最直接设计**
+**最小但完整设计**
 
-- 只实现已经有实际使用案例的 Hook。
+- 当前版本必须真实实现工具执行生命周期中的明确 Hook 边界，包括适用阶段、执行顺序、参数/结果传递，以及 Hook 拒绝、Hook 异常和工具失败时的确定语义；不能只在 Demo 中手工调用审计函数来模拟 Hook。
+- 只实现已经有实际使用案例的 Hook 类型和用途。
 - 不提前实现插件发现、动态加载、Hook DSL 或完整生命周期框架。
-- 如果一个回调列表已足够，就不创建复杂 Hook Manager。
+- 回调列表是满足本版需求时的候选实现，不是预先规定的最终结构；只要能完整表达上述生命周期契约，就不创建复杂 Hook Manager、Hook Registry 或通用中间件框架。
+- 不提前实现插件生命周期，不等于可以省略本版工具调用前后及失败路径的完整 Hook 语义。
 
 **测试重点**
 
@@ -639,12 +760,14 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 - 原子写入状态文件。
 - 引入已被真实错误场景证明需要的错误分类和有限重试。
 
-**最直接设计**
+**最小但完整设计**
 
-- 使用本地 JSON 文件。
+- 当前版本必须真实实现可恢复状态边界、持久化时机、原子替换、版本/兼容性校验、中断标记和恢复后的重新判断；错误分类必须实际决定是否重试，并对重试次数和耗尽结果给出可观察语义。
+- 状态保存在本地文件；JSON 是优先候选格式，但实施时应根据本版状态结构和原子写入方案确认，不把某一序列化格式提升为未来版本的固定架构承诺。
 - 不建立数据库、Event Sourcing、分布式锁或通用状态机。
 - 不恢复正在执行的 Shell 进程；中断调用标记后，由恢复的模型重新判断。
 - 不为了未来 Workflow 或多 Agent 提前持久化不存在的字段。
+- 不提前设计分布式或 Workflow 状态，不等于可以弱化本版单进程 Session/Run 的保存、故障处理和一致恢复机制。
 
 **测试重点**
 
@@ -689,11 +812,13 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 - 必要时总结较旧历史。
 - 保持 Tool Use 与 Tool Result 配对完整。
 
-**最直接设计**
+**最小但完整设计**
 
-- 从保守字符/token 估算和固定阈值开始。
+- 当前版本必须真实实现请求前预算判断、触发决策、旧大型 Tool Result 的安全裁剪、必要的历史摘要、协议配对保护和失败回退；不能只统计长度或在超限后被动报错。
+- 保守字符估算、token 估算和固定阈值都是第一版候选方案；实施时根据实际模型接口、可获得的计量信息和失败案例选择最小可验证方案，阈值必须可测试且有明确依据，但不预先固化为长期策略。
 - 不建立复杂 Context 策略框架。
 - 只有一种压缩策略不足时，再根据失败案例增加层次。
+- 不提前设计多层 Context 策略，不等于可以省略本版从预算检测到压缩、继续调用及失败保护的完整闭环。
 
 **测试重点**
 
@@ -737,11 +862,13 @@ Compact 只服务当前 session；新 session 仍无法复用已验证的项目�
 - 新 session 启动时加载小型 Memory。
 - 支持最小的确认、合并和去重。
 
-**最直接设计**
+**最小但完整设计**
 
-- 使用 Markdown 或 JSON 本地文件；根据 V08 开始时的真实数据选择。
+- 当前版本必须真实实现稳定信息的明确写入/确认、跨 session 加载、合并去重、容量控制和注入边界；不能把完整历史文件直接当作 Memory，也不能仅靠提示词声称“记住”。
+- Memory 使用简单本地文件；Markdown、JSON 或其他同等简单的表示是候选方案，在 V08 开始时根据真实数据形态和所需更新语义选择，不把文件格式预先规定为未来 Memory 架构。
 - 不使用 Embedding、向量库、RAG 或复杂自动召回。
 - 不保存临时任务进度、完整对话或大段源码。
+- 不提前设计自动召回或知识库，不等于可以省略本版稳定信息从写入到新 session 使用的完整、可验证生命周期。
 
 **测试重点**
 
@@ -784,11 +911,13 @@ Compact 只服务当前 session；新 session 仍无法复用已验证的项目�
 - 在受控缺陷项目上完成端到端任务。
 - 用事件轨迹证明每一步发生过。
 
-**最直接设计**
+**最小但完整设计**
 
-- 只做现有组件的必要装配和提示词调整。
+- 当前版本必须真实验证现有机制形成一个由实际结果驱动的闭环：探索、计划、修改、测试、读取失败结果、继续修复、再次验证并如实总结；不能用预设成功轨迹、单次脚本或只改提示词来代替机制协同。
+- 只做 V01–V08 现有组件的必要装配、边界修正和提示词调整；具体编排方式由受控缺陷案例暴露的问题决定，不预先固化新的执行框架。
 - 不加入独立 Goal Evaluator、SubAgent、MCP、Workflow 或后台任务。
 - 是否完成仍由主模型判断，测试结果作为模型观察。
+- 不提前设计 Goal/Workflow 能力，不等于可以省略本版失败后继续行动、以测试结果验证完成状态及事件轨迹证明闭环的完整验收。
 
 **测试重点**
 
