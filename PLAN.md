@@ -327,8 +327,8 @@ CLI Tool Rendering 必须把“返回给模型的 Tool Result”与“展示给�
 V01 基础运行与 Agent Loop
   → V02 工具与文件操作
   → V03 权限
-  → V04 Plan/Todo
-  → V05 Hooks
+  → V04 Hooks
+  → V05 Plan/Todo
   → V06 状态与可靠性
   → V07 Context Budget 与 Compact
   → V08 简单 Memory
@@ -624,7 +624,7 @@ Allow? (y/N)
 
 **为什么需要 V04**
 
-安全边界建立后，Agent 仍可能在复杂任务中遗漏步骤、重复行动或过早结束。
+V03 完成后，Tool Runtime 已经在工具执行前后真实出现 Permission、Tool Call/Tool Result Observability、duration 和 result summary 等横切逻辑。Agent Loop 如果继续直接依赖这些具体实现，每增加一种工具生命周期职责都要再次修改核心循环；因此下一步应先提炼最小 Hook 接入点，而不必等 Todo 出现后再证明动机。
 
 **手动验收场景 / Demo Cases**
 
@@ -651,7 +651,64 @@ Allow? (y/N)
    - 预期最终效果：命令绝不执行，Agent 清楚说明不能执行。
    - 验收重点：验证 Deny 优先于 Ask，并且 Deny 没有用户批准入口。
 
-### V04：Plan/Todo
+### V04：Hooks
+
+**要解决的问题**
+
+如何让 Agent Loop 只声明 Tool 生命周期已经到达某个位置，而不直接依赖 Permission、Tool Call/Tool Result Observability 等具体横切实现？
+
+**本版目标**
+
+- 参考 `learn-claude-code` s04 的核心思想，用简单 Hook 注册表保存生命周期事件对应的 callback。
+- 提供 `register_hook(event, callback)` 注册 callback。
+- 提供 `trigger_hooks(event, context)`，由 Agent Loop 在明确生命周期位置统一触发。
+- 将 Permission、Tool Call/Tool Result Observability，以及与工具执行直接相关的 duration、result summary 接入对应 Hook。
+- Agent Loop 不再直接依赖这些具体横切逻辑；工具 schema、`TOOL_HANDLERS`、handler 和 `tool_result` 回路保持原有职责。
+
+**最小但完整设计**
+
+- Hook 注册表只需表达 `event -> callback list`；`register_hook()` 追加 callback，`trigger_hooks()` 按注册顺序调用当前事件的 callbacks。
+- 当前保留两个由 V03 真实职责证明需要的生命周期事件：
+  - `PreToolUse`：解析出 `tool_name + tool_input` 后、handler 执行前触发，用于接入 Permission 和 Tool Call Observability。
+  - `PostToolUse`：Runtime 得到将返回模型的 Tool Result 后触发，用于接入 Tool Result Observability、duration 和有限 result summary。
+- Permission 的 Rule、`allow / ask / deny`、用户确认、Deny 优先级和 Permission Denied Tool Result 完全继承 V03 已验证行为；V04 只把 Permission 改为通过 Tool 执行前的 Hook 接入，不重写 Permission Pipeline 或 Rule。
+- handler 成功、工具错误和 Permission 拒绝继续形成既有 Tool Result，并由 Tool 执行前后的 Hook 保持 Observability 闭环；当前没有真实需要时不增加独立 Error Hook 或其他错误生命周期事件。
+- callback 异常只定义本版保障 Permission 不被绕过、工具不被重复执行、结果不被误报所需的安全、确定且可测试行为；不为此设计 callback 分类、复杂返回协议、错误生命周期或 Hook 状态机。
+- EventLogger、CLI、JSONL 和现有 Observability 数据模型继续承担事件表示、展示与落盘职责。V04 只把 Tool 生命周期相关的调用时机接入 Hook，不重新设计日志系统，也不把 Hook 当作 Event Bus。
+- 生命周期事件以 V03 当前代码的真实职责为依据；不机械照搬参考项目的全部事件，也不预先禁止未来由真实问题证明必要的新事件。
+- 不引入 HookManager、Middleware、Hook DSL、Plugin System、动态加载或通用 Hook Framework。
+
+**测试重点**
+
+- `register_hook()` 与 `trigger_hooks()` 的注册顺序、参数传递和事件隔离。
+- `PreToolUse` 中 Permission 的 Allow、Ask、Deny 和用户确认仍保持 V03 行为，Deny 优先级不变。
+- 成功、工具错误、未知工具和 Permission 拒绝都产生语义正确的 Tool Result，并触发一次 `PostToolUse`。
+- Tool Call/Tool Result Observability、duration 和 result summary 经 Hook 接入后，CLI/JSONL 的既有数据模型与展示职责不变。
+- Hook callback 异常不会绕过 Permission、重复执行 handler 或产生虚假的成功事件。
+
+**为什么需要 V05**
+
+Hook 解耦了已经出现的 Tool 生命周期横切逻辑，但 Agent 在复杂任务中仍可能遗漏步骤、重复行动或过早结束，需要一个通过现有 Tool Runtime 使用的显式 Plan/Todo 能力。
+
+**手动验收场景 / Demo Cases**
+
+1. **成功工具调用的 Hook 顺序**
+   - 用户输入示例：`读取 README.md，并告诉我标题。`
+   - 预期运行轨迹：`PreToolUse` 中 Permission Allow 与 Tool Call Observability → read_file handler → Runtime 构造 Tool Result → `PostToolUse` 记录结果、耗时和摘要 → LLM Final。
+   - 预期最终效果：读取结果正确，CLI/JSONL 保持既有 Tool Call/Result 数据模型，并能观察正确顺序。
+   - 验收重点：验证 Agent Loop 只触发 Hook，不直接调用 Permission 或 Tool Observability 的具体实现。
+2. **工具失败仍进入统一结果 Hook**
+   - 用户输入示例：`读取 hook_missing.txt；如果失败，告诉我具体原因，不要创建文件。`
+   - 预期运行轨迹：`PreToolUse` → read_file 返回失败 → Runtime 构造错误 Tool Result → `PostToolUse` 记录错误、耗时和摘要 → LLM Final。
+   - 预期最终效果：文件保持不存在，终端和 JSONL 能观察工具错误，且无需独立 Error Hook。
+   - 验收重点：验证成功与失败共享 `PostToolUse`，并保留 V02 的可恢复错误语义。
+3. **Permission 拒绝仍保持结果闭环**
+   - 用户输入示例：`创建 hook_denied.txt；当出现权限确认时我会拒绝。`
+   - 预期运行轨迹：`PreToolUse` 中 Permission Ask → 用户拒绝 → handler 不执行 → Runtime 构造 Permission Denied Tool Result → `PostToolUse` 记录拒绝结果 → LLM Final。
+   - 预期最终效果：文件不存在，轨迹清楚区分 Permission 拒绝与工具执行失败，不产生虚假成功事件。
+   - 验收重点：验证 V03 Permission 语义不变，只改变其接入 Agent Loop 的方式。
+
+### V05：Plan/Todo
 
 **要解决的问题**
 
@@ -659,71 +716,27 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 
 **本版目标**
 
-- 增加 `todo_write` 能力。
-- 在 CLI 中展示计划变化。
+- 增加普通工具 `todo_write`，像其他工具一样加入 `TOOLS` 和 `TOOL_HANDLERS`。
+- `todo_write` 必须通过既有 Tool Runtime 执行：`LLM → tool_use(todo_write) → TOOL_HANDLERS → todo_write handler → tool_result → LLM`。
+- Todo State 只由 `todo_write` handler 按工具输入更新，并在 CLI 中展示计划变化。
 - 状态限定为 `pending / in_progress / completed`。
 
 **最小但完整设计**
 
+- `todo_write` 是普通 Tool，不是 Hook；Agent Loop 不为 Todo 增加特殊执行分支，Hook 也不负责更新 Todo State。
 - 当前版本必须真实实现 Todo 的身份、状态转换、更新校验和可观察展示；计划不能只是提示词中的文本，也不能在工具执行结果与状态不一致时被静默标记为完成。
 - Todo 仅需覆盖本版状态和操作；内存中的列表、字典或二者组合都是候选实现，实施时选择能最小而完整表达身份约束与状态转换的结构，不在路线阶段锁定为最终数据模型。
+- `todo_write` 的成功或错误由 Runtime 统一构造为与 `tool_use_id` 匹配的 Tool Result，再返回模型；同时自然经过 V04 的 Tool 生命周期 Hook。
 - 不实现任务依赖图、Workflow 或多 Agent 认领。
 - 不把 Plan 变成 Runtime 强制执行的固定步骤；下一步仍由模型决定。
 - 不提前设计未来的 Workflow，不等于可以省略本版 Todo 的完整状态语义、非法转换处理及其与真实执行结果的一致性验证。
 
 **测试重点**
 
+- `todo_write` 与其他普通工具使用同一 schema、handler map、Permission/Hook 和 Tool Result 路径，Agent Loop 没有 Todo 特殊分支。
 - 创建、更新和完成计划。
 - 非法状态、重复 ID 和多个 `in_progress`。
-- 计划工具错误能够反馈模型。
-
-**为什么需要 V05**
-
-日志、权限、计划及后续横切行为会反复出现在工具调用前后；需要观察这种重复是否值得形成明确扩展点。
-
-**手动验收场景 / Demo Cases**
-
-1. **显式计划后完成多步任务**
-   - 用户输入示例：`先用 todo_write 建立计划：读取 README、创建 todo_demo.txt、确认文件内容；然后逐项执行并更新状态。`
-   - 预期运行轨迹：Todo 创建 → 单项进入 `in_progress` → 对应 Tool Call → 标为 `completed` → 下一项继续。
-   - 预期最终效果：CLI 可看到计划状态变化，文件创建并被重新读取，全部 Todo 最终完成。
-   - 验收重点：验证 Plan/Todo 对多步执行过程的显式记录，而不是固定 Workflow。
-2. **计划中途遇到工具错误**
-   - 用户输入示例：`先建立 Todo：读取 todo_missing.txt；若不存在则创建并再次读取；完成后更新所有 Todo。`
-   - 预期运行轨迹：Todo in_progress → read_file 失败 → 模型更新或补充 Todo → 创建并验证文件 → Todo completed。
-   - 预期最终效果：错误没有让计划静默丢失，最终状态与实际完成情况一致。
-   - 验收重点：验证计划状态可以随真实执行结果调整。
-3. **拒绝写权限后的计划调整**
-   - 用户输入示例：`建立计划并创建 todo_denied.txt；如果我拒绝写入，请更新计划并说明未完成原因。`
-   - 预期运行轨迹：Todo 创建 → write_file ask → 用户拒绝 → 错误 Tool Result → Todo 不得被错误标记为 completed。
-   - 预期最终效果：文件不存在，计划和最终总结明确记录阻塞或取消。
-   - 验收重点：验证 Todo、Permission 与真实执行状态一致。
-
-### V05：Hooks
-
-**要解决的问题**
-
-如何在不反复修改具体工具的情况下，在工具执行前后加入审计、校验或结果处理？
-
-**本版目标**
-
-- 根据前几版已经出现的真实重复和生命周期边界，提炼当前 Hook 问题所需的最小合理前置、后置或错误 Hook；数量可以有限，但生命周期语义必须完整。
-- 保持 Permission 继续负责授权。
-
-**最小但完整设计**
-
-- 当前版本必须真实实现工具执行生命周期中的明确 Hook 边界，包括适用阶段、执行顺序、参数/结果传递，以及 Hook 拒绝、Hook 异常和工具失败时的确定语义；不能只在 Demo 中手工调用审计函数来模拟 Hook。
-- 只实现已经有实际使用案例的 Hook 类型和用途。
-- 不提前实现插件发现、动态加载、Hook DSL 或完整生命周期框架。
-- 回调列表是满足本版需求时的候选实现，不是预先规定的最终结构；只要能完整表达上述生命周期契约，就不创建复杂 Hook Manager、Hook Registry 或通用中间件框架。
-- 不提前实现插件生命周期，不等于可以省略本版工具调用前后及失败路径的完整 Hook 语义。
-
-**测试重点**
-
-- 执行顺序。
-- 参数和结果传递。
-- Hook 拒绝或异常。
-- 工具失败时是否运行相应 Hook。
+- handler 拒绝非法更新时返回错误 Tool Result，Todo State 不被部分或静默修改，模型能够据此修正。
 
 **为什么需要 V06**
 
@@ -731,21 +744,21 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 
 **手动验收场景 / Demo Cases**
 
-1. **成功工具调用的 Hook 顺序**
-   - 用户输入示例：`读取 README.md，并告诉我标题。`
-   - 预期运行轨迹：Permission allow → Before Tool Hook → read_file → After Tool Hook → LLM Final；CLI/JSONL 可观察顺序。
-   - 预期最终效果：读取结果正确，审计 Hook 记录工具名、结果状态和耗时摘要。
-   - 验收重点：验证 Hook 在不修改 read_file 实现的情况下包围工具执行。
-2. **工具失败时的 Error Hook**
-   - 用户输入示例：`读取 hook_missing.txt；如果失败，告诉我具体原因，不要创建文件。`
-   - 预期运行轨迹：Before Tool Hook → read_file 失败 → Error/After Hook 按本版约定执行 → 错误 Tool Result → LLM Final。
-   - 预期最终效果：文件保持不存在，终端和 JSONL 能区分工具错误与 Hook 执行状态。
-   - 验收重点：验证失败路径的 Hook 顺序和异常可观测性。
-3. **Permission 拒绝不冒充工具执行**
-   - 用户输入示例：`创建 hook_denied.txt；当出现权限确认时我会拒绝。`
-   - 预期运行轨迹：Permission ask → 用户拒绝；工具执行前后的 Hook 是否运行必须符合 V05 README 的明确约定，但绝不能产生成功工具事件。
-   - 预期最终效果：文件不存在，轨迹能清楚区分 Permission 拒绝与 Tool/Hook 失败。
-   - 验收重点：验证 Permission 和 Hook 的职责边界。
+1. **显式计划后完成多步任务**
+   - 用户输入示例：`先用 todo_write 建立计划：读取 README、创建 todo_demo.txt、确认文件内容；然后逐项执行并更新状态。`
+   - 预期运行轨迹：`todo_write` Tool Use → handler 创建 Todo State → Tool Result → 单项进入 `in_progress` → 对应工具调用 → 再次调用 `todo_write` 标为 `completed` → 下一项继续。
+   - 预期最终效果：CLI 可看到计划状态变化，文件创建并被重新读取，全部 Todo 最终完成。
+   - 验收重点：验证 Todo 通过普通 Tool Runtime 工作，并且 Plan 不是固定 Workflow。
+2. **计划中途遇到工具错误**
+   - 用户输入示例：`先建立 Todo：读取 todo_missing.txt；若不存在则创建并再次读取；完成后更新所有 Todo。`
+   - 预期运行轨迹：Todo in_progress → read_file 失败 → 模型调用 `todo_write` 更新或补充 Todo → 创建并验证文件 → Todo completed。
+   - 预期最终效果：错误没有让计划静默丢失，最终状态与实际完成情况一致。
+   - 验收重点：验证计划状态只能经 handler 更新，并可随真实 Tool Result 调整。
+3. **拒绝写权限后的计划调整**
+   - 用户输入示例：`建立计划并创建 todo_denied.txt；如果我拒绝写入，请更新计划并说明未完成原因。`
+   - 预期运行轨迹：Todo 创建 → write_file ask → 用户拒绝 → Permission Denied Tool Result → Todo 不得被错误标记为 completed。
+   - 预期最终效果：文件不存在，计划和最终总结明确记录阻塞或取消。
+   - 验收重点：验证 Todo、Permission、V04 Hooks 与真实执行状态一致。
 
 ### V06：状态与可靠性
 
@@ -756,7 +769,7 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 **本版目标**
 
 - 明确当前实际存在的 Session/Run 状态。
-- 保存和恢复 messages、plan 及必要元数据。
+- 保存和恢复 messages、V05 Todo State 及必要元数据。
 - 原子写入状态文件。
 - 引入已被真实错误场景证明需要的错误分类和有限重试。
 
@@ -914,7 +927,7 @@ Compact 只服务当前 session；新 session 仍无法复用已验证的项目�
 **最小但完整设计**
 
 - 当前版本必须真实验证现有机制形成一个由实际结果驱动的闭环：探索、计划、修改、测试、读取失败结果、继续修复、再次验证并如实总结；不能用预设成功轨迹、单次脚本或只改提示词来代替机制协同。
-- 只做 V01–V08 现有组件的必要装配、边界修正和提示词调整；具体编排方式由受控缺陷案例暴露的问题决定，不预先固化新的执行框架。
+- 只做 V01–V08 现有组件（包括 V04 Hooks 与 V05 Plan/Todo）的必要装配、边界修正和提示词调整；具体编排方式由受控缺陷案例暴露的问题决定，不预先固化新的执行框架。
 - 不加入独立 Goal Evaluator、SubAgent、MCP、Workflow 或后台任务。
 - 是否完成仍由主模型判断，测试结果作为模型观察。
 - 不提前设计 Goal/Workflow 能力，不等于可以省略本版失败后继续行动、以测试结果验证完成状态及事件轨迹证明闭环的完整验收。
@@ -1074,7 +1087,7 @@ pytest 不调用真实 API：
 
 - 探索标准化外部工具接入。
 - 将 MCP 工具适配进已经存在的工具调用路径，不改变 Agent Loop。
-- 依赖 V02 Tool 行为、V03 Permission、V05 Observability/Hooks 和 V06 Error Handling。
+- 依赖已经形成清楚边界的贯穿式 Observability、V02 工具与文件操作、V03 权限、V04 Hooks 和 V06 状态与可靠性。
 - 不在 V01–V09 为 MCP 预设 Tool Protocol。
 
 ### V12：SubAgent
@@ -1088,7 +1101,7 @@ pytest 不调用真实 API：
 
 - 探索固定流程编排。
 - 区分模型自主决定下一步的 Agent Loop，与代码控制步骤的 Workflow。
-- 依赖 Plan、Hooks/Events、Durable State 和稳定的单 Agent。
+- 依赖贯穿式 Observability、V04 Hooks、V05 Plan/Todo、V06 状态与可靠性和稳定的单 Agent。
 - 先从一个真实固定流程开始，不提前建设通用图执行引擎。
 
 ### V14：Long-running Task / Background Execution
