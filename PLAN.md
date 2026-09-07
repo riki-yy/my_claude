@@ -718,25 +718,53 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 
 - 增加普通工具 `todo_write`，像其他工具一样加入 `TOOLS` 和 `TOOL_HANDLERS`。
 - `todo_write` 必须通过既有 Tool Runtime 执行：`LLM → tool_use(todo_write) → TOOL_HANDLERS → todo_write handler → tool_result → LLM`。
-- Todo State 只由 `todo_write` handler 按工具输入更新，并在 CLI 中展示计划变化。
-- 状态限定为 `pending / in_progress / completed`。
+- `todo_write` 的 input 是新的完整 Todo List：
+  ```json
+  {
+    "todos": [
+      {
+        "id": "...",
+        "content": "...",
+        "status": "..."
+      }
+    ]
+  }
+  ```
+- 每个 Todo item 只包含最小字段 `id / content / status`；状态限定为 `pending / in_progress / completed`。
+- Todo State 只由 `todo_write` handler 按工具输入整体更新；更新成功后，CLI 和 Tool Result 使用同一份渲染后的完整 TodoList 文本。
 
 **最小但完整设计**
 
 - `todo_write` 是普通 Tool，不是 Hook；Agent Loop 不为 Todo 增加特殊执行分支，Hook 也不负责更新 Todo State。
-- 当前版本必须真实实现 Todo 的身份、状态转换、更新校验和可观察展示；计划不能只是提示词中的文本，也不能在工具执行结果与状态不一致时被静默标记为完成。
-- Todo 仅需覆盖本版状态和操作；内存中的列表、字典或二者组合都是候选实现，实施时选择能最小而完整表达身份约束与状态转换的结构，不在路线阶段锁定为最终数据模型。
+- 每次调用 `todo_write` 都表示提交新的完整 Todo State，不设计 `add / update / delete` 等增量 action。handler 必须先校验整个 `todos` 数组；全部通过后才整体替换当前内存状态。
+- 更新具有原子性：任意一项校验失败时整次调用失败，旧 Todo State 完全不变，不允许部分新增、修改或删除。
+- handler 至少校验：`id` 非空且在列表内唯一；`content` 非空；`status` 只能是三个允许值；同一时刻最多一个 Todo 为 `in_progress`；Todo 总数不超过 20。
+- Todo 是否 `completed` 只由模型显式再次调用 `todo_write` 提交新完整状态决定；Runtime 不根据其他 Tool Result 自动推导或修改 Todo 状态。
+- `todo_write` 更新成功后，先替换内存中的最新 TodoList，再由一个 render 函数读取这份当前最新 TodoList，并渲染为带状态符号的完整文本。状态展示映射为 `○ pending`、`› in_progress`、`✓ completed`，例如：
+  ```text
+  ✓ 读取 README
+  › 修改代码
+  ○ 运行测试
+  ```
+- render 产出的同一份完整 TodoList 文本同时用于 CLI 展示，以及作为 `todo_write` 的 Tool Result 返回模型并放回 `messages`；不为 CLI 和模型分别设计两套 Todo 输出格式。
+- render 必须逐项完整保留 Todo item 原始的 `content`，不做摘要、改写或截断；它只负责按 `pending → ○ + 原始完整 content`、`in_progress → › + 原始完整 content`、`completed → ✓ + 原始完整 content` 添加展示符号并进行基本排版。不得为了 CLI 简洁而丢失任何 Todo content 信息。
+- 展示符号不进入 Todo State；内部真实状态和工具输入协议始终使用 `pending / in_progress / completed`。
+- Todo State 在 V05 只保存在内存中；持久化和恢复留给 V06。
 - `todo_write` 的成功或错误由 Runtime 统一构造为与 `tool_use_id` 匹配的 Tool Result，再返回模型；同时自然经过 V04 的 Tool 生命周期 Hook。
-- 不实现任务依赖图、Workflow 或多 Agent 认领。
+- 不设计任务依赖、优先级、子任务树、负责人、Workflow、Task Graph 或更复杂的 Todo Framework。
 - 不把 Plan 变成 Runtime 强制执行的固定步骤；下一步仍由模型决定。
-- 不提前设计未来的 Workflow，不等于可以省略本版 Todo 的完整状态语义、非法转换处理及其与真实执行结果的一致性验证。
 
 **测试重点**
 
 - `todo_write` 与其他普通工具使用同一 schema、handler map、Permission/Hook 和 Tool Result 路径，Agent Loop 没有 Todo 特殊分支。
-- 创建、更新和完成计划。
-- 非法状态、重复 ID 和多个 `in_progress`。
-- handler 拒绝非法更新时返回错误 Tool Result，Todo State 不被部分或静默修改，模型能够据此修正。
+- 完整 Todo List 可以创建状态，并在后续调用中通过整体替换表达内容修改、状态更新、项目新增或删除；不依赖增量 action。
+- 空 `id`、重复 `id`、空 `content`、非法 `status`、多个 `in_progress` 和超过 20 项均被拒绝。
+- 全量校验和原子替换：即使数组前部项目合法，只要任意一项失败，handler 就返回错误 Tool Result，旧 Todo State 在内容、顺序和状态上均完全不变。
+- `completed` 不会因其他工具成功而自动产生；只有模型再次调用 `todo_write` 并提交合法的新完整状态后才改变。
+- 成功更新时严格遵循“替换内存中的完整 TodoList → render 当前最新 TodoList → 将同一份渲染文本用于 CLI 和 Tool Result → Tool Result 放回 `messages`”的顺序。
+- CLI 与 Tool Result 获得完全相同的完整 TodoList 文本，并用 `○ / › / ✓` 展示 `pending / in_progress / completed`；同时确认内存状态和工具输入协议仍使用英文状态值。
+- 对包含长文本或细节信息的 `content` 验证渲染保真：CLI 和 Tool Result 中每一项都保留输入中的原始完整 `content`，没有摘要、改写或截断，render 仅增加对应状态符号和基本排版。
+- Todo State 只在当前进程内有效，本版不测试或暗示跨进程恢复。
 
 **为什么需要 V06**
 
@@ -746,19 +774,20 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 
 1. **显式计划后完成多步任务**
    - 用户输入示例：`先用 todo_write 建立计划：读取 README、创建 todo_demo.txt、确认文件内容；然后逐项执行并更新状态。`
-   - 预期运行轨迹：`todo_write` Tool Use → handler 创建 Todo State → Tool Result → 单项进入 `in_progress` → 对应工具调用 → 再次调用 `todo_write` 标为 `completed` → 下一项继续。
-   - 预期最终效果：CLI 可看到计划状态变化，文件创建并被重新读取，全部 Todo 最终完成。
-   - 验收重点：验证 Todo 通过普通 Tool Runtime 工作，并且 Plan 不是固定 Workflow。
-2. **计划中途遇到工具错误**
-   - 用户输入示例：`先建立 Todo：读取 todo_missing.txt；若不存在则创建并再次读取；完成后更新所有 Todo。`
-   - 预期运行轨迹：Todo in_progress → read_file 失败 → 模型调用 `todo_write` 更新或补充 Todo → 创建并验证文件 → Todo completed。
-   - 预期最终效果：错误没有让计划静默丢失，最终状态与实际完成情况一致。
-   - 验收重点：验证计划状态只能经 handler 更新，并可随真实 Tool Result 调整。
-3. **拒绝写权限后的计划调整**
+   - 预期运行轨迹：模型以完整列表调用 `todo_write` → 普通 Tool Runtime 调用 handler → handler 全量校验并整体写入内存状态 → render 当前最新完整 TodoList → 同一份带 `○ / › / ✓` 的文本用于 CLI 和 Tool Result → Tool Result 放回 `messages` → 模型用后续完整列表调用依次显式更新 `in_progress` 和 `completed` → 对应文件工具照常执行。
+   - 预期最终效果：CLI 与模型收到相同的完整 TodoList 渲染文本，文件创建并被重新读取，全部 Todo 最终由模型显式更新为 `completed`。
+   - 验收重点：验证完整状态替换、先更新后渲染、单一输出格式、原始 `content` 完整保留、显式完成，以及 Todo 通过普通 Tool Runtime 工作而非固定 Workflow。
+2. **非法完整状态被原子拒绝**
+   - 前置条件：先用一次合法 `todo_write` 建立至少两个 Todo，并记录 CLI 展示的旧状态。
+   - 用户输入示例：`再次调用 todo_write 提交完整列表，但让两个项目同时为 in_progress；如果失败，检查原计划是否保持不变。`
+   - 预期运行轨迹：`todo_write` Tool Use → handler 校验整个数组并发现多个 `in_progress` → 返回错误 Tool Result → 模型读取错误；不发生部分替换。
+   - 预期最终效果：调用失败后，内存中的 Todo 内容、顺序和状态与调用前完全一致。
+   - 验收重点：验证全量校验、最多一个 `in_progress` 和失败时的原子性；空字段、重复 ID、非法状态及数量上限由自动测试覆盖。
+3. **拒绝写权限后不得自动完成 Todo**
    - 用户输入示例：`建立计划并创建 todo_denied.txt；如果我拒绝写入，请更新计划并说明未完成原因。`
-   - 预期运行轨迹：Todo 创建 → write_file ask → 用户拒绝 → Permission Denied Tool Result → Todo 不得被错误标记为 completed。
-   - 预期最终效果：文件不存在，计划和最终总结明确记录阻塞或取消。
-   - 验收重点：验证 Todo、Permission、V04 Hooks 与真实执行状态一致。
+   - 预期运行轨迹：模型用完整列表创建 Todo 并将对应项显式设为 `in_progress` → write_file ask → 用户拒绝 → Permission Denied Tool Result → Runtime 不自动修改 Todo → 模型再次调用 `todo_write` 提交合法完整状态，使该项保持 `pending` 或 `in_progress`，但不得标为 `completed`。
+   - 预期最终效果：文件不存在，Todo 没有被 Runtime 根据 Tool Result 自动完成，最终总结明确说明未完成原因。
+   - 验收重点：验证 Todo 只有三种状态、完成必须显式写入，以及 Todo、Permission 和 V04 Hooks 各自职责不变。
 
 ### V06：状态与可靠性
 

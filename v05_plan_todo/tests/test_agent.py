@@ -486,6 +486,28 @@ def test_todo_schema_describes_complete_minimal_state():
     ]
 
 
+def test_todo_write_tool_call_summary_shows_count_without_dumping_todos(runtime):
+    todos = [
+        {"id": "1", "content": "private first content", "status": "in_progress"},
+        {"id": "2", "content": "private second content", "status": "pending"},
+        {"id": "3", "content": "private third content", "status": "completed"},
+    ]
+    _, logger = set_script(runtime, [
+        response(block("tool_use", id="todo-summary", name="todo_write", input={"todos": todos})),
+        response(block("text", text="done")),
+    ])
+
+    agent.agent_loop([], logger, "run-1")
+
+    shown = logger.stream.getvalue()
+    assert "[Tool Call] todo_write todos=3" in shown
+    assert "[Tool Call] todo_write no key arguments" not in shown
+    started = next(event for event in read_events(logger) if event["event_type"] == "tool.started")
+    assert started["data"]["arguments"]["summary"] == "todos=3"
+    assert started["data"]["arguments"]["fields"] == {"todos": 3}
+    assert "private first content" not in json.dumps(started, ensure_ascii=False)
+
+
 def test_todo_write_replaces_complete_state_and_can_clear_it():
     first = [
         {"id": "read", "content": "读取 README", "status": "completed"},

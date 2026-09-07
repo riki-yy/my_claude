@@ -293,6 +293,17 @@ def _quoted(value: Any, limit: int = CLI_PREVIEW_LIMIT) -> str:
 
 
 def _tool_call_summary(name: str, tool_input: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if name == "todo_write" and isinstance(tool_input.get("todos"), list):
+        todo_count = len(tool_input["todos"])
+        summary = f"todos={todo_count}"
+        raw_length = len(json.dumps(tool_input, ensure_ascii=False, default=str, sort_keys=True))
+        return f"{name} {summary}", {
+            "summary": summary,
+            "fields": {"todos": todo_count},
+            "original_length": raw_length,
+            "truncated": True,
+        }
+
     fields_by_tool = {
         "bash": ("command", "timeout_seconds"),
         "read_file": ("path",),

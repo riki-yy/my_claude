@@ -112,6 +112,7 @@ CLI 每个 session 写入 `logs/<session_id>.jsonl`。Todo State 只存在于当
 
 - 2026-09-04，实施前在 `v04_hooks/` 执行全量测试，142 项通过。
 - 2026-09-04，V05 首轮全量测试 162 项通过；补充 20 项边界、普通 Runtime 错误回路和 JSONL 有限摘要检查后，最终全量 164 项通过。
+- 2026-09-07，为真实 Demo 发现的 `todo_write no key arguments` 增加专用数量摘要和回归测试后，V05 全量 165 项通过。
 
 ## 手动 Demo Cases
 
@@ -146,10 +147,12 @@ CLI 每个 session 写入 `logs/<session_id>.jsonl`。Todo State 只存在于当
 
 ## 验收摘要
 
-- 2026-09-04：V04 baseline 142 项通过；V05 最终 Fake Model/Runtime 测试 164 项通过，`agent.py` 与测试语法编译通过。
+- 2026-09-04：V04 baseline 142 项通过；2026-09-07，V05 最终 Fake Model/Runtime 测试 165 项通过，`agent.py` 与测试语法编译通过。
 - 根 `.env` 的 `DeepSeek-V4-Flash` 完成三个真实 Demo：多步计划全部完成、非法完整状态原子拒绝、Permission 拒绝后显式保持未完成。
 - 三份最终 Demo JSONL 均可逐行解析，公共字段完整、sequence 连续且不含当前 API Key；事件数分别为 44、20、22，工具与 Permission 顺序符合预期。
 - `todo_demo.txt` 已创建并回读；`secrets/todo_denied.txt` 保持不存在。V05 到此停止，不进入 V06。
+- 2026-09-07：额外真实 Coding Task 验收通过；`agnes-2.0-flash` 在同一 session 中分别完成网页版番茄钟和网页版贪吃蛇，实现过程中通过完整 TodoList 显式跟踪并完成四个步骤，且能根据工具失败继续验证和收尾。日志：`logs/1169ee9f-66e2-4069-a8f1-4bf98bbfbb25.jsonl`。
+- 2026-09-07：用户确认 V05 的自动测试、正式 Demo 和额外真实 Coding Task 均通过；版本完成并停在 V05，等待用户亲自提交 Git。
 
 ## 相对 V04：新增、修改和保留
 
@@ -214,6 +217,28 @@ CLI 每个 session 写入 `logs/<session_id>.jsonl`。Todo State 只存在于当
 - **影响范围**：只影响成功 `todo_write` 的 JSONL display 落盘；CLI、模型、Agent Loop、其他工具和 event schema 不变。
 - **验证方式与结果**：长 content 集成测试确认 CLI 与 Tool Result 完整相同、JSONL 不含完整长 content；最终 V05 全量 164 项通过。三份 Demo JSONL 不含当前 API Key。
 - **平台/环境**：macOS、Python 3.12 已验证；Windows、Linux 未实际验证。
+- **状态**：已解决。
+
+### 记录 6：todo_write Tool Call 错误显示 no key arguments
+
+- **现象**：真实 API Demo 中，模型已经传入非空 `todos` 数组，但 CLI 的调用行显示 `[Tool Call] todo_write no key arguments`；后续 Todo Tool Result 与 handler 行为均正常。
+- **触发方式**：任意让真实模型或 Fake Model 以 `{"todos": [...]}` 调用 `todo_write` 的场景；现有三份最终 Demo 日志都能观察到修复前的该文案。
+- **原因**：`_tool_call_summary()` 的专用字段表只有 V04 的六个工具，没有 `todo_write`。通用 fallback 虽取得 `todos` key，但只把字符串、数字、布尔值和 `None` 加入展示；`todos` 是 list，因此 `display_fields` 为空并落入 `no key arguments`。
+- **解决方案**：只在 `_tool_call_summary()` 增加 `todo_write` 专用分支。当 `todos` 是数组时仅计算并展示 `todos=<数量>`，不遍历或 dump Todo item content；完整 TodoList 继续只由既有 Tool Result render 展示。
+- **影响范围**：只修改 `todo_write` 的 Tool Call CLI/JSONL 参数摘要。handler、Todo State、Hook、Permission、Tool Result、render 和 Agent Loop 均未改变。
+- **验证方式与结果**：新增 `test_todo_write_tool_call_summary_shows_count_without_dumping_todos`，确认 CLI 显示 `[Tool Call] todo_write todos=3`、不再出现 `no key arguments`，结构化摘要只有数量且不含 Todo content。该测试单独 1 项通过；V05 全量 165 项通过，用时 0.49 秒。
+- **平台/环境**：macOS、Python 3.12 已验证；Windows、Linux 未实际验证。
+- **状态**：已解决。
+
+### 记录 7：额外真实 Coding Task 验收
+
+- **现象**：在正式 Demo 之外，真实模型使用 V05 连续完成了网页版番茄钟和网页版贪吃蛇两个多步 Coding Task；两个任务都建立四项完整 TodoList，并从单项 `in_progress` 推进到最终四项全部 `completed`。执行过程中，番茄钟的首个组合验证脚本返回 `SHELL_NONZERO_EXIT`，贪吃蛇首次列目录返回目录不存在，但 Agent 都读取 Tool Result 后继续执行，没有静默完成 Todo 或提前结束。
+- **触发方式**：通过 CLI 要求从零使用原生 HTML/CSS/JavaScript 实现番茄钟和贪吃蛇，完成后自行检查并尽可能验证；真实 session 日志为 `logs/1169ee9f-66e2-4069-a8f1-4bf98bbfbb25.jsonl`。
+- **原因**：两次工具失败分别来自模型生成的首个验证命令自身错误，以及任务开始时目标目录尚不存在；不是 `todo_write`、Hook、Permission 或 Tool Runtime 故障。
+- **解决方案**：未修改 Runtime。Agent 根据失败 Tool Result 调整后续动作：番茄钟改用拆分后的 HTML、JavaScript、CSS 检查完成验证；贪吃蛇创建目标目录后继续写入文件并分别检查页面结构、游戏逻辑和样式。
+- **影响范围**：只产生真实 Coding Task 的工作区文件和 JSONL 使用证据；V05 实现与测试没有因任务特例增加分支，V06 能力未引入。
+- **验证方式与结果**：`agnes-2.0-flash` 的番茄钟 run 在 6 轮后以 `run.completed` 结束，Todo 最终四项全 `✓`；贪吃蛇 run 在 4 轮后以 `run.completed` 结束，Todo 最终四项全 `✓`。整个日志共 109 条事件，两个 Coding Task 均完成文件写入和多项命令检查。2026-09-07 用户确认额外真实 Coding Task 验收通过。
+- **平台/环境**：macOS、Python 3.12、`agnes-2.0-flash` 与当前 Anthropic-compatible 服务已验证；Windows、Linux、浏览器端人工视觉与交互未在该日志中实际验证。
 - **状态**：已解决。
 
 ## 已知限制（Known Limitations）

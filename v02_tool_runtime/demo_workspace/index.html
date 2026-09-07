@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>宇智波带土 - 个人主页</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', 'Microsoft YaHei', sans-serif;
+            background: #0d0d0d;
+            color: #e0e0e0;
+            line-height: 1.6;
+        }
+
+        /* 头部 Hero 区域 */
+        .hero {
+            position: relative;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            background: linear-gradient(135deg, #1a0a0a 0%, #0d0d0d 60%, #2a0505 100%);
+            overflow: hidden;
+        }
+
+        .hero::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255, 50, 50, 0.15) 0%, transparent 60%);
+            animation: rotate 20s linear infinite;
+        }
+
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .hero-content {
+            position: relative;
+            z-index: 2;
+            padding: 20px;
+        }
+
+        .hero h1 {
+            font-size: 4.5rem;
+            font-weight: bold;
+            letter-spacing: 5px;
+            color: #ff3333;
+            text-shadow: 0 0 20px rgba(255, 50, 50, 0.6), 0 0 40px rgba(255, 50, 50, 0.3);
+            margin-bottom: 10px;
+        }
+
+        .hero h2 {
+            font-size: 1.5rem;
+            font-weight: normal;
+            color: #cccccc;
+            letter-spacing: 8px;
+            margin-bottom: 30px;
+        }
+
+        .hero .subtitle {
+            font-size: 1.1rem;
+            color: #888;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+
+        .scroll-hint {
+            position: absolute;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #555;
+            font-size: 0.9rem;
+            animation: bounce 2s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateX(-50%) translateY(0); }
+            50% { transform: translateX(-50%) translateY(10px); }
+        }
+
+        /* 内容区域 */
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 60px 20px;
+        }
+
+        section {
+            margin-bottom: 80px;
+        }
+
+        h3.section-title {
+            font-size: 2rem;
+            color: #ff3333;
+            margin-bottom: 30px;
+            padding-left: 15px;
+            border-left: 4px solid #ff3333;
+        }
+
+        /* 关于 */
+        .about-content {
+            display: flex;
+            gap: 40px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .about-text {
+            flex: 1;
+            min-width: 300px;
+        }
+
+        .about-text p {
+            margin-bottom: 15px;
+            color: #aaa;
+        }
+
+        .sharingan {
+            flex: 0 0 250px;
+            width: 250px;
+            height: 250px;
+            border-radius: 50%;
+            background: radial-gradient(circle at 50% 50%, #ff0000 0%, #cc0000 30%, #990000 45%, #000 50%, #000 100%);
+            position: relative;
+            box-shadow: 0 0 30px rgba(255, 0, 0, 0.4);
+            margin: 0 auto;
+        }
+
+        .sharingan::after {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 18px;
+            height: 18px;
+            background: #000;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.8);
+        }
+
+        .sharingan .tomoe {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 14px;
+            height: 20px;
+            background: #000;
+            border-radius: 0 0 50% 0;
+            transform-origin: center;
+        }
+
+        .sharingan .tomoe:nth-child(1) { transform: translate(-50%, -50%) rotate(0deg) translateY(-75px) rotate(15deg); }
+        .sharingan .tomoe:nth-child(2) { transform: translate(-50%, -50%) rotate(120deg) translateY(-75px) rotate(15deg); }
+        .sharingan .tomoe:nth-child(3) { transform: translate(-50%, -50%) rotate(240deg) translateY(-75px) rotate(15deg); }
+
+        /* 能力卡片 */
+        .skills-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 25px;
+        }
+
+        .skill-card {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 10px;
+            padding: 25px;
+            transition: transform 0.3s, box-shadow 0.3s, border-color 0.3s;
+        }
+
+        .skill-card:hover {
+            transform: translateY(-5px);
+            border-color: #ff3333;
+            box-shadow: 0 10px 30px rgba(255, 50, 50, 0.1);
+        }
+
+        .skill-card h4 {
+            color: #ff3333;
+            font-size: 1.3rem;
+            margin-bottom: 12px;
+        }
+
+        .skill-card p {
+            color: #999;
+            font-size: 0.95rem;
+        }
+
+        /* 经历时间线 */
+        .timeline {
+            position: relative;
+            padding-left: 30px;
+        }
+
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: linear-gradient(to bottom, #ff3333, #333);
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 35px;
+        }
+
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            left: -30px;
+            top: 5px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: #ff3333;
+            transform: translateX(-50%);
+            box-shadow: 0 0 10px rgba(255, 50, 50, 0.5);
+        }
+
+        .timeline-item .time {
+            color: #ff3333;
+            font-weight: bold;
+            font-size: 0.9rem;
+            margin-bottom: 5px;
+        }
+
+        .timeline-item h5 {
+            color: #e0e0e0;
+            font-size: 1.1rem;
+            margin-bottom: 8px;
+        }
+
+        .timeline-item p {
+            color: #888;
+            font-size: 0.95rem;
+        }
+
+        /* 名言 */
+        .quote-section {
+            background: linear-gradient(135deg, #1a0a0a, #2a0505);
+            border: 1px solid #444;
+            border-radius: 15px;
+            padding: 50px;
+            text-align: center;
+            position: relative;
+        }
+
+        .quote-section blockquote {
+            font-size: 1.8rem;
+            font-style: italic;
+            color: #ff6666;
+            margin-bottom: 20px;
+            line-height: 1.8;
+        }
+
+        .quote-section cite {
+            color: #888;
+            font-style: normal;
+            font-size: 1rem;
+        }
+
+        /* 页脚 */
+        footer {
+            text-align: center;
+            padding: 40px 20px;
+            border-top: 1px solid #222;
+            color: #555;
+            font-size: 0.9rem;
+        }
+
+        /* 响应式 */
+        @media (max-width: 768px) {
+            .hero h1 {
+                font-size: 2.8rem;
+            }
+
+            .hero h2 {
+                font-size: 1.1rem;
+            }
+
+            .about-content {
+                flex-direction: column-reverse;
+            }
+
+            .quote-section blockquote {
+                font-size: 1.2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Hero 区域 -->
+    <header class="hero">
+        <div class="hero-content">
+            <h1>宇智波带土</h1>
+            <h2>うちはオビト</h2>
+            <p class="subtitle">"在忍者的世界里，那些破坏规则的人会被当作废物，但是，不珍惜同伴的人连废物都不如。"</p>
+        </div>
+        <div class="scroll-hint">▼ 向下滚动 ▼</div>
+    </header>
+
+    <!-- 关于 -->
+    <div class="container">
+        <section id="about">
+            <h3 class="section-title">关于我</h3>
+            <div class="about-content">
+                <div class="about-text">
+                    <p>我是宇智波带土，木叶忍者村的忍者，宇智波一族的成员。曾是一个天真、热血、怀揣梦想的少年。</p>
+                    <p>在神无毗桥之战中，为了拯救同伴卡卡西，我被巨石压中，濒临死亡。在获救后，我目睹了心爱之人野原琳的死亡，从此坠入黑暗。</p>
+                    <p>我经历了从"吊车尾"到"晓组织幕后黑手"，再到"忍界大战的发动者"，最终在生命尽头重新找回本心，承认了自己"曾经想成为火影"的梦想。</p>
+                    <p>我的名字，象征着"带着承诺飞翔"，我的故事，是关于爱与救赎的悲剧。</p>
+                </div>
+                <div class="sharingan">
+                    <div class="tomoe"></div>
+                    <div class="tomoe"></div>
+                    <div class="tomoe"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 能力 -->
+        <section id="skills">
+            <h3 class="section-title">能力与忍术</h3>
+            <div class="skills-grid">
+                <div class="skill-card">
+                    <h4>写轮眼 / 万花筒写轮眼</h4>
+                    <p>拥有时空间忍术能力的万花筒写轮眼，能够开启神威空间，自由穿梭于现实与异空间之间。</p>
+                </div>
+                <div class="skill-card">
+                    <h4>神威</h4>
+                    <p>时空间忍术，可将自身或目标吸入异空间，也可从异空间转移物体，是极其强大的攻防一体忍术。</p>
+                </div>
+                <div class="skill-card">
+                    <h4>六道之力</h4>
+                    <p>成为十尾人柱力后获得六道仙人的力量，掌握了求道玉、阴阳遁等多种忍术。</p>
+                </div>
+                <div class="skill-card">
+                    <h4>木遁</h4>
+                    <p>移植初代火影的细胞后获得木遁的能力，能够使用木遁.扦插之术等强力忍术。</p>
+                </div>
+                <div class="skill-card">
+                    <h4>写轮眼轮回眼</h4>
+                    <p>同时拥有写轮眼和轮回眼的独特形态，能够发动轮回眼的各种瞳术能力。</p>
+                </div>
+                <div class="skill-card">
+                    <h4>体术·通灵术</h4>
+                    <p>拥有出色的体术能力，可以通灵外道魔像等强大的通灵兽。</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 经历 -->
+        <section id="history">
+            <h3 class="section-title">人生轨迹</h3>
+            <div class="timeline">
+                <div class="timeline-item">
+                    <div class="time">木叶忍者学校时期</div>
+                    <h5>吊车尾的青春</h5>
+                    <p>与卡卡西、琳组成水门班，虽然总是迟到、总是吊车尾，但心中怀揣着火影的梦想。</p>
+                </div>
+                <div class="timeline-item">
+                    <div class="time">神无毗桥之战</div>
+                    <h5>命运转折点</h5>
+                    <p>为救卡卡西被巨石压中，濒死之际将左眼写轮眼托付给卡卡西。</p>
+                </div>
+                <div class="timeline-item">
+                    <div class="time">黑暗的觉醒</div>
+                    <h5>目睹琳的死亡</h5>
+                    <p>获救后亲眼目睹琳被卡卡西的千鸟贯穿，绝望中开启了万花筒写轮眼，从此坠入黑暗。</p>
+                </div>
+                <div class="timeline-item">
+                    <div class="time">晓组织时期</div>
+                    <h5>幕后黑手</h5>
+                    <p>化名"阿飞"，暗中操控晓组织，策划"月之眼计划"，意图创造一个没有悲伤的理想世界。</p>
+                </div>
+                <div class="timeline-item">
+                    <div class="time">忍界大战</div>
+                    <h5>十尾人柱力</h5>
+                    <p>发动第四次忍界大战，成为十尾人柱力，与整个忍界为敌。</p>
+                </div>
+                <div class="timeline-item">
+                    <div class="time">最终的救赎</div>
+                    <h5>回到本心</h5>
+                    <p>在鸣人的话语中找回自我，承认了自己"曾经想成为火影"的梦想，将一切托付给鸣人后安然逝去。</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- 名言 -->
+        <section id="quotes">
+            <h3 class="section-title">名言</h3>
+            <div class="quote-section">
+                <blockquote>
+                    "如果说我是怪物的话，那我宁愿舍弃自己的灵魂，只为让琳活下来。<br>
+                    但是，琳已经死了，那么，就让这个世界一同毁灭吧。"
+                </blockquote>
+                <blockquote>
+                    "我一直在做噩梦，现在，我终于从梦中醒来了。"
+                </blockquote>
+                <cite>—— 宇智波带土</cite>
+            </div>
+        </section>
+    </div>
+
+    <footer>
+        <p>宇智波带土 · 个人主页 | 火影忍者·疾风传</p>
+        <p>© 2024 All Rights Reserved</p>
+    </footer>
+
+</body>
+</html>
