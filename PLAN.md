@@ -793,53 +793,194 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
 
 **要解决的问题**
 
-如何在进程退出后恢复会话，并区分可恢复错误、用户错误和 Runtime 故障？
+V06 分开解决两个不能混为一谈的可靠性问题：
+
+- **A. In-Process Recovery**：进程仍存活时，如何从 LLM/API 瞬态故障中恢复，同时不把 Tool/User Error 错当成 API 故障？
+- **B. Restart Recovery**：发生 Ctrl-C、进程退出或重启后，如何恢复此前 Session/Run，并在 Tool 副作用不确定时依据真实 workspace 安全继续？
 
 **本版目标**
 
-- 明确当前实际存在的 Session/Run 状态。
-- 保存和恢复 messages、V05 Todo State 及必要元数据。
-- 原子写入状态文件。
-- 引入已被真实错误场景证明需要的错误分类和有限重试。
+- 为 LLM/API retryable error 建立最小分类和有限重试闭环。当前已经真实遇到 DeepSeek-V4-Flash 返回 `429 model_concurrency_rate_limit_exceeded`，因此本版必须处理这类 transient error，而不是只预留接口。
+- 定义并持久化恢复 Session/Run 所必需的最小 Runtime State，明确它的语义、生命周期和 checkpoint 时机。
+- 使用原子本地 JSON state file，使失败写入不会直接破坏上一份可恢复状态。
+- restore 后依据 `current_run.status` 可靠地区分 completed、failed、running 和 interrupted Run；只对需要恢复的 running/interrupted Run 保留原 Run 和 round，并在副作用不确定时先核对 workspace。
+- 在现有 EventLogger、CLI 和 JSONL 基础上，使 checkpoint、restore、retry、interruption 和 resume 可观察。
 
 **最小但完整设计**
 
-- 当前版本必须真实实现可恢复状态边界、持久化时机、原子替换、版本/兼容性校验、中断标记和恢复后的重新判断；错误分类必须实际决定是否重试，并对重试次数和耗尽结果给出可观察语义。
-- 状态保存在本地文件；JSON 是优先候选格式，但实施时应根据本版状态结构和原子写入方案确认，不把某一序列化格式提升为未来版本的固定架构承诺。
-- 不建立数据库、Event Sourcing、分布式锁或通用状态机。
-- 不恢复正在执行的 Shell 进程；中断调用标记后，由恢复的模型重新判断。
-- 不为了未来 Workflow 或多 Agent 提前持久化不存在的字段。
-- 不提前设计分布式或 Workflow 状态，不等于可以弱化本版单进程 Session/Run 的保存、故障处理和一致恢复机制。
+#### A. In-Process Recovery
+
+- 只对分类为 retryable 的 LLM/API transient error 做有限重试；`429 model_concurrency_rate_limit_exceeded` 是当前已确认需要覆盖的真实案例。V06 只实现当前真实需要的 transient retry，不扩展成通用容错框架。
+- retry 是同一个 Agent **Round** 内的 **Attempt**，不得增加 Agent Round。`MAX_ROUNDS` 约束逻辑模型轮次，不能因 API retry 被错误消耗，也不能通过 retry 或重启被绕过。
+- retry 参数固定为：`MAX_RETRIES = 4`、`BASE_DELAY = 1.0s`、`MAX_DELAY = 16.0s`、`JITTER_RATIO = 0.25`。`MAX_RETRIES` 不包含 initial LLM request，表示 initial request 失败后最多额外 retry 4 次，因此同一 Round 最多发生 5 次实际 LLM API 调用；配置层使用 retry 计数，不增加 `MAX_ATTEMPTS` 常量。
+- Observability 仍使用 Attempt 描述实际调用次序：`attempt=1` 是 initial request，`attempt=2` 是 retry 1，`attempt=3` 是 retry 2，`attempt=4` 是 retry 3，`attempt=5` 是 retry 4。所有 Attempt 始终属于同一 Round，不增加 Agent Round，也不额外消耗 `MAX_ROUNDS`。
+- 没有有效 `Retry-After` 时，以 `BASE_DELAY` 使用 bounded exponential backoff，retry 1/2/3/4 的基础 delay 依次为 `1s / 2s / 4s / 8s`，再在基础 delay 上增加 `0~25%` jitter；加入 jitter 后的最终实际 sleep 仍受 `MAX_DELAY = 16s` 硬上限约束。如果服务端提供有效 `Retry-After`，优先采用该值，但最终实际等待同样不得超过 `MAX_DELAY = 16s`。
+- 每次 retry 记录 attempt 和最终实际 delay；4 次 retry 全部失败后明确产生 retry exhausted，current Run 进入 `failed`，不悄悄吞掉错误，也不继续无限调用模型。
+- Tool/User Error 不触发 LLM/API retry，包括但不限于 `FILE_NOT_FOUND`、`INVALID_TOOL_INPUT`、`PERMISSION_DENIED`。这类错误继续通过结构化 Tool Result 返回 LLM，由模型判断下一步。
+
+#### B. Restart Recovery
+
+- 处理 Ctrl-C、进程退出和重启后的恢复，不尝试恢复已经消失的 Python/Shell 调用栈或正在执行的子进程。
+- 持久化必要 Runtime State。`current_run.status` 的最小合法值固定为 `running / completed / failed / interrupted`，不增加 `unfinished` boolean。
+- `running` 表示 Run 正常执行中；restore 时若旧 state 仍为 running，说明上一个进程未正常结束，作为 unexpected unfinished Run 恢复。
+- `completed` 表示 Run 已正常完成；只恢复 Session 上下文并等待下一条用户输入，不重跑旧任务。
+- `failed` 表示 Run 已明确失败并结束；恢复时保留失败事实，不自动把它当作 running 继续。
+- `interrupted` 表示 Runtime 捕获到中断，并已成功持久化中断状态；作为明确中断的 unfinished Run 恢复。
+- running/interrupted Run 恢复同一个 `run_id` 和原 `round`，不能创建新 Run 或重置计数来绕过 `MAX_ROUNDS`；Runtime 根据 `interruption_info` 构造最小 recovery context，再让模型判断如何继续。
+- 如果中断发生在可能产生 Tool 副作用的阶段，不自动重放 Tool；恢复后先让模型使用现有工具检查真实 workspace，再决定后续动作。
+
+#### 最小 Persisted Runtime State
+
+V06 只定义以下 State 的语义和生命周期：
+
+```text
+schema_version
+session_id
+messages
+todos                 # V05 Todo State
+current_run
+  run_id
+  status
+  round
+interruption_info
+updated_at            # 可选 observability/debug metadata
+```
+
+- `schema_version` 用于加载时的结构/兼容性校验；不兼容状态必须明确失败，不能猜测恢复。
+- `session_id` 标识被恢复的会话；`messages` 和 `todos` 分别恢复模型上下文与 V05 的当前完整 Todo State。
+- `current_run` 描述当前或最后一个 Run；`status` 只使用 `running / completed / failed / interrupted`，不另设 `unfinished` boolean；`round` 是该 Run 已使用/正在恢复的逻辑 Round 位置。
+- `interruption_info` 描述当前或最后一个 in-flight 执行现场；它不是 Tool Result，也不是错误消息。
+- `updated_at` 可以用于日志、排障和人工观察，但恢复正确性不得依赖时间戳推断执行是否成功、状态谁更新或 Tool 是否产生副作用。
+- 实现时根据当前代码选择最小的 `dict`、`dataclass` 或同等表达即可；本版不提前规定 `StateManager`、`StateRepository`、通用 State Machine 或复杂类层次。
+
+#### `interruption_info` 语义
+
+- phase 必须来自当前 Runtime 的真实一致性边界，第一版最小集合为 `llm_call`、`permission_wait`、`tool_execution`、`tool_result_recording`；若实现核对发现某个 phase 在当前调用路径不存在，应以实际代码中的最小等价阶段为准，而不是制造抽象流程。
+- Tool 相关阶段只记录恢复判断必需的信息，例如 `tool_name` 和 `tool_use_id`。
+- 进入可能产生不确定副作用的关键阶段前，先设置 `interruption_info` 并 checkpoint；当对应结果已经可靠记录后再清除并 checkpoint。
+- 不将其扩展为通用状态机、完整 Tool Call Registry、执行历史或 Tool Result 的替代品。
+
+#### Checkpoint
+
+- Checkpoint 是 Runtime 自动触发的持久化动作，不是 Tool，也不由模型主动调用。
+- Runtime 在关键一致性边界保存完整的最小 Runtime State，至少包括：user message 已追加；Run status 变化；LLM response 已可靠追加；Tool Result 已可靠记录；Todo State 成功变化；`interruption_info` 设置或清除；Run completed、failed 或 interrupted。
+- 对可能产生不确定副作用的阶段，在进入阶段前设置 `interruption_info` 并 checkpoint。Checkpoint 的先后关系必须让恢复逻辑能够区分“尚未进入关键阶段”和“可能已经执行但结果尚未可靠记录”。
+- Todo checkpoint 只发生在 V05 handler 已完成全量校验并成功整体替换之后；失败的 Todo 更新不改变持久化 Todo State。
+
+#### Atomic Persistence
+
+- V06 第一版使用本地 JSON state file，但这只是当前单进程版本的最小持久化选择，不是未来架构承诺。
+- 保存顺序固定为：`serialize → same-directory temp file → write → flush/fsync → close → os.replace`。不得直接覆盖正式 state file。
+- 临时文件与正式文件位于同一目录，以使用原子 replace 语义；写入、同步或替换失败必须明确报告，并保留上一份可解析的正式状态。
+- atomic replace 只保证 Runtime State 文件自身的一致性，不提供 workspace 与 state file 之间的跨文件事务，也不能证明外部 Tool 副作用是否发生。
+
+#### Restore / Resume
+
+恢复流程为：
+
+```text
+restart
+→ load state
+→ validate schema/structure
+→ restore messages/todos/session/run/round/interruption_info
+```
+
+- 显式 resume 时，如果 state file corrupted、truncated、schema incompatible 或必需字段非法，必须明确输出 `State Load Error` 并写入 state load failure Observability event；不得修改或覆盖原 state file，不得静默创建空 Session，也不进入交互式 Y/N 新建流程；当前 resume 进程以 non-zero exit 结束。用户若要新建 Session，必须使用普通启动方式显式创建。
+- 如果 previous Run completed：恢复 Session 上下文，等待下一条用户输入，不重跑旧任务。
+- 如果 previous Run running：视为上一个进程未正常结束的 unexpected unfinished Run，恢复同一个 Run 和 round，根据 `interruption_info` 构造最小 recovery context，重新让模型判断如何继续。
+- 如果 previous Run interrupted：视为已明确记录中断的 unfinished Run，恢复同一个 Run 和 round，根据 `interruption_info` 构造最小 recovery context，重新让模型判断如何继续。
+- 如果 previous Run failed：恢复 Session 上下文并保留失败事实，不自动继续该 Run；后续动作由新的用户输入触发。
+- recovery context 只陈述已可靠持久化的事实、in-flight phase 及副作用不确定性；不得把 `interruption_info` 伪装成 Tool Result，也不得声称 Tool 成功或失败。
+
+#### Workspace Reconciliation
+
+- workspace 是真实外部状态。不得持久化并依赖 `workspace_modified=true/false` 之类布尔值作为事实来源。
+- 如果 Tool 在中断前可能已经产生副作用、但 Tool Result 尚未可靠记录，则：不假设成功、不假设失败、不自动 replay。
+- 恢复后的模型使用 `read_file`、`grep`、`bash`、`git diff`、`pytest` 等既有工具检查真实 workspace，并根据实际结果继续任务。
+- V06 不承诺 exactly-once execution，也不引入 workspace + state 事务、完整 Tool Call Registry 或 Event Sourcing。
+
+#### Error Handling 的可扩展边界
+
+不建立万能 `GlobalErrorHandler`，保持三个职责层次：
+
+```text
+① Tool/User Error
+   → Tool Result → LLM 处理
+
+② LLM/API Error
+   → classification → retry / fail
+
+③ Process Interruption
+   → checkpoint → restore → reconcile
+```
+
+- LLM/API Error Classification 与恢复逻辑形成当前版本所需的最小统一边界，使 Agent Loop 不直接堆叠具体供应商 API exception；分类只承载是否 retryable、可选 `Retry-After` 和形成明确失败所需的信息。
+- V06 只实现真实需要的 transient retry。未来 V07 如果出现 `PROMPT_TOO_LONG`，可以在同一分类边界新增 `PROMPT_TOO_LONG → Compact → retry same Round`，而不重写 Agent Loop。
+- V06 不实现 Context Compact，也不为了未来建立 ErrorHandler Framework、Recovery Registry、Strategy Pattern、Plugin 或 DSL。
+
+#### Observability
+
+- 复用现有 EventLogger、CLI 和 JSONL，至少观察：checkpoint/save、restore、interrupted/resumed、retry attempt、retry delay、retry exhausted、state load failure。显式 resume 加载失败时，CLI 输出 `State Load Error`，对应事件写入后进程 non-zero exit。
+- 日志必须明确区分：**Round** 是 Agent 的逻辑模型轮次；**Attempt** 是同一 Round 内的实际 LLM API 调用次序。`attempt=1` 表示 initial request，`attempt=2/3/4/5` 分别表示 retry 1/2/3/4；retry 不增加 Round，也不额外消耗 `MAX_ROUNDS`。
+- 日志和 `updated_at` 用于解释发生过什么，不作为恢复正确性的事实来源。
 
 **测试重点**
 
-- 保存/恢复一致性。
-- 原子写入失败。
-- 损坏、截断和不兼容状态。
-- KeyboardInterrupt。
-- 可重试/不可重试错误及重试耗尽。
+- save/restore consistency，以及 Todo、messages、session、run、round 的完整恢复。
+- atomic write failure 时不破坏上一份正式 state file。
+- 显式 resume 遇到 corrupted、truncated、schema incompatible 或必需字段非法时，输出 `State Load Error`、写入 state load failure event、保持原文件不变并以 non-zero exit 结束；不创建空 Session，也不进入 Y/N 流程。
+- `KeyboardInterrupt` 能留下可解释的 interruption 状态。
+- completed Run restore 后只等待新输入，不重跑旧任务。
+- running Run restore 时按 unexpected unfinished Run 处理，保留同一 Run 和 round，并重新交给模型判断。
+- interrupted Run restore 时按明确中断的 unfinished Run 处理，保留同一 Run 和 round，并重新交给模型判断。
+- failed Run restore 时保留失败事实，不自动继续，也不改写为 running。
+- uncertain Tool side effect 不自动 replay，模型先 inspect workspace 再继续。
+- retryable LLM/API error 在同一 Round 内最多产生 5 个 Attempt；覆盖真实的 429/transient 分类，并验证 `attempt=1..5` 与 initial/retry 1..4 的映射。
+- 验证 `MAX_RETRIES = 4`、`BASE_DELAY = 1.0s`、`MAX_DELAY = 16.0s`、`JITTER_RATIO = 0.25`；`MAX_RETRIES` 不包含 initial request，配置层不存在 `MAX_ATTEMPTS`。
+- 没有有效 `Retry-After` 时，验证 retry 1/2/3/4 的基础 delay 为 `1s / 2s / 4s / 8s`，在其上增加 `0~25%` jitter，且最终实际 sleep 不超过 `16s`。
+- 有效 `Retry-After` 优先于本地 backoff，但验证最终实际等待仍受 `MAX_DELAY = 16s` 硬上限约束。
+- retry 4 仍失败后明确产生 retry exhausted，current Run 进入 `failed`，且整个过程不增加 Agent Round、不额外消耗 `MAX_ROUNDS`、不继续调用模型。
+- `FILE_NOT_FOUND`、`INVALID_TOOL_INPUT`、`PERMISSION_DENIED` 等 Tool/User Error 不触发 API retry。
+
+**本版明确不做**
+
+- Database、Event Sourcing、exactly-once Tool execution、完整 Tool Call Registry。
+- Workflow / Task Graph、通用 State Machine、distributed lock。
+- fallback model、circuit breaker。
+- Context Compact、Memory、Background Task、Multi-Agent。
+- 不恢复正在执行的 Shell 进程，不为未来 Workflow、多 Agent 或分布式执行提前持久化不存在的字段。
 
 **为什么需要 V07**
 
-会话可以长期存在后，messages 和 Tool Result 会持续增长，最终接近模型上下文限制。
+V06 使 Session/Run 可以可靠延续，但不会控制持续增长的 messages 和 Tool Result；长期会话最终会接近模型上下文限制。因此 V07 才引入 Context Budget 与 Compact。即使未来把 `PROMPT_TOO_LONG` 接入 V06 建立的分类边界，Compact 的预算、裁剪、摘要和配对保护仍全部属于 V07，不提前进入 V06。
 
 **手动验收场景 / Demo Cases**
 
-1. **退出后恢复同一 session**
+1. **正常 Session 恢复**
    - 用户输入示例：首次运行输入 `记住本次任务标记是 STATE-42，并建立一个未完成 Todo：读取 README。`；正常退出并用 README 规定的恢复命令重新启动后输入 `继续上一任务，并告诉我任务标记。`
-   - 预期运行轨迹：首次保存 messages、Todo 和 session 元数据 → 重启加载状态 → 模型继续未完成 Todo。
-   - 预期最终效果：恢复后能回答 `STATE-42` 并继续任务，而不是开启空白历史。
-   - 验收重点：验证持久化与恢复一致性。
-2. **中断后安全恢复**
-   - 用户输入示例：`创建 state_demo.txt 并读取确认。`；在权限确认或一次模型调用前后按 Ctrl-C，再恢复该 session 并输入 `检查上一任务实际完成到哪里，再继续。`
-   - 预期运行轨迹：中断被记录 → 状态文件保持可解析 → 恢复时不假定未确认的工具已经成功 → 模型通过工具检查真实状态。
+   - 预期运行轨迹：首次保存 messages、Todo、session 和四值 Run status → 重启加载并校验状态 → 恢复上下文；completed 等待新输入，running/interrupted 恢复原 Run/round，failed 保留失败事实但不自动继续。
+   - 预期最终效果：恢复后能回答 `STATE-42`，Todo 和 Run 语义一致，不开启空白历史，也不重跑 completed Run。
+   - 验收重点：验证持久化/恢复一致性及 `running / completed / failed / interrupted` 四种状态的恢复分流，不存在额外 `unfinished` boolean。
+2. **Tool 执行附近中断后 reconcile**
+   - 用户输入示例：`创建 state_demo.txt 并读取确认。`；在 permission wait、tool execution 或 tool result recording 附近按 Ctrl-C，再恢复该 Session 并输入 `检查上一任务实际完成到哪里，再继续。`
+   - 预期运行轨迹：进入关键阶段前设置 `interruption_info` 并 checkpoint → 中断后 state file 仍可解析 → 恢复同一 Run/round → recovery context 明确副作用未知 → 模型使用 `read_file`、`git diff` 等既有工具检查 workspace → 根据事实继续，不自动 replay。
    - 预期最终效果：不会重复或虚构已完成操作，最终文件状态与总结一致。
-   - 验收重点：验证原子状态写入、中断语义和恢复后的重新判断。
-3. **非可恢复工具错误不触发 API 重试**
-   - 用户输入示例：`读取 definitely_missing.txt，不要创建；告诉我错误。`
-   - 预期运行轨迹：工具返回文件不存在 → 模型处理；LLM retry 保持 0，不把用户/工具错误当网络瞬态错误重试。
-   - 预期最终效果：明确报告文件不存在，不出现无意义的重复模型请求。
-   - 验收重点：验证错误分类和有限重试边界。
+   - 验收重点：验证 interruption phase、原子状态写入、同 Run/round 恢复、workspace reconciliation 和 uncertain Tool side effect 不自动重放。
+3. **429 / transient LLM/API retry**
+   - 前置条件：用可控 fake client 或测试注入复现 `429 model_concurrency_rate_limit_exceeded`，分别提供和不提供 `Retry-After`。
+   - 预期运行轨迹：错误被分类为 retryable → `attempt=1` initial request 失败 → 最多执行 retry 1/2/3/4，对应 `attempt=2/3/4/5` → 无有效 `Retry-After` 时使用 `1s / 2s / 4s / 8s` 基础 delay，并增加 `0~25%` jitter；有有效 `Retry-After` 时优先采用 → 两条路径的最终实际等待都不超过 `MAX_DELAY = 16s` → 成功后继续，或 retry 4 后明确 retry exhausted 并将 current Run 置为 `failed`。
+   - 预期最终效果：`MAX_RETRIES = 4` 且不包含 initial request，同一 Round 最多 5 次实际 LLM API 调用；瞬态恢复不增加 Agent Round，也不额外消耗 `MAX_ROUNDS`，持续故障有限失败，不无限重试。
+   - 验收重点：验证分类、Round/Attempt 映射、两种 delay 来源、四个固定参数、上限和 exhaustion observability；配置层不出现 `MAX_ATTEMPTS`。
+4. **Tool/User Error 不触发 retry**
+   - 用户输入示例：`读取 definitely_missing.txt，不要创建；告诉我错误。`；另一次场景在写文件权限确认时拒绝。
+   - 预期运行轨迹：工具分别返回 `FILE_NOT_FOUND` 或 `PERMISSION_DENIED` Tool Result → 模型处理；LLM/API retry attempt 不增加。
+   - 预期最终效果：明确报告实际 Tool/User Error，不出现无意义的重复 API 请求。
+   - 验收重点：验证 Tool/User Error、LLM/API Error 与 Process Interruption 三层边界。
+5. **显式 resume 遇到非法 state**
+   - 前置条件：分别准备 corrupted、truncated、schema incompatible 或必需字段非法的 state file，并保留其原始内容用于恢复后比对。
+   - 预期运行轨迹：使用显式 resume 命令加载 → CLI 输出 `State Load Error` → EventLogger/JSONL 写入 state load failure → 当前进程 non-zero exit。
+   - 预期最终效果：原 state file 内容未被修改或覆盖；没有静默创建空 Session，也没有进入交互式 Y/N 新建流程。需要新 Session 时，用户另行使用普通启动方式。
+   - 验收重点：验证加载失败的输出、事件、文件保护和退出码形成一致闭环。
 
 ### V07：Context Budget 与 Compact
 

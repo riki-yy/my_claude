@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>贪吃蛇小游戏</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="game-container">
+    <header class="game-header">
+      <h1 class="game-title">🐍 贪吃蛇</h1>
+      <div class="score-board">
+        <div class="score-item">
+          <span class="score-label">分数</span>
+          <span id="score" class="score-value">0</span>
+        </div>
+        <div class="score-item">
+          <span class="score-label">最高分</span>
+          <span id="high-score" class="score-value">0</span>
+        </div>
+      </div>
+    </header>
+
+    <section class="canvas-wrap">
+      <canvas id="game-canvas" width="400" height="400"></canvas>
+      <div id="overlay" class="overlay hidden">
+        <p id="overlay-title" class="overlay-title">游戏结束</p>
+        <p id="overlay-subtitle" class="overlay-subtitle"></p>
+        <button id="restart-btn" class="restart-btn">重新开始</button>
+      </div>
+    </section>
+
+    <footer class="game-footer">
+      <p class="controls-tip">使用键盘 <kbd>↑</kbd> <kbd>↓</kbd> <kbd>←</kbd> <kbd>→</kbd> 控制蛇的移动</p>
+      <p class="status-tip" id="status-tip">按任意方向键开始游戏</p>
+    </footer>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

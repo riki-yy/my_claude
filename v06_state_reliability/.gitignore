@@ -1,0 +1,6 @@
+logs/
+state/
+state_demo.txt
+__pycache__/
+.pytest_cache/
+*.py[cod]
