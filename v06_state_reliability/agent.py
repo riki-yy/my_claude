@@ -52,11 +52,19 @@ SYSTEM = (
     "Python tests with 'python3.12 -m pytest', then give the final answer as soon as the "
     "requested result is verified. If a tool result contains PERMISSION_DENIED, do not "
     "try another tool or workaround unless the user explicitly requested an alternative; "
-    "explain the denial and finish the current task. Use todo_write when the user asks for "
-    "a plan or when a multi-step task benefits from explicit progress tracking. Every "
+    "explain the denial and finish the current task. For complex multi-step work, make "
+    "todo_write the first tool call before discovery or mutation, especially for tasks involving "
+    "multiple files or distinct implementation and verification stages, even when the user "
+    "does not explicitly ask for a plan or Todo. Todo items must describe actual deliverable "
+    "work, not meta-work such as planning or breaking down the task. Use moderate granularity: "
+    "each item should be an independently actionable and verifiable stage. For multi-file "
+    "deliverables, use separate items when files or components can progress independently, "
+    "but do not split simple operations into many tiny todos. Every "
     "todo_write call must contain the complete current todo list, with at most one item "
     "in_progress. Explicitly call todo_write again to mark completed work; tool results do "
-    "not update todos automatically. Report what you changed and what you verified."
+    "not update todos automatically. When a Todo maintenance reminder appears, review the "
+    "real progress and normally update the complete TodoList before another non-Todo tool "
+    "call when the progress has changed. Report what you changed and what you verified."
 )
 TOOLS = [
     {
@@ -129,8 +137,13 @@ TOOLS = [
     {
         "name": "todo_write",
         "description": (
-            "Replace the complete in-memory todo list. Send every current item on every "
-            "call. Use pending, in_progress, or completed, with at most one in_progress item."
+            "Create or replace the complete progress list for complex multi-step work, "
+            "especially multi-file implementation and verification tasks. Describe actual "
+            "deliverable stages at moderate, independently verifiable granularity; separate "
+            "multi-file components when their progress can differ, omit planning as a "
+            "meta-task, and avoid tiny operational steps. Send every current "
+            "item on every call. Use pending, in_progress, or completed, with at most one "
+            "in_progress item."
         ),
         "input_schema": {
             "type": "object",
@@ -171,6 +184,8 @@ TOOL_OUTPUT_LIMIT = 12_000
 MAX_SEARCH_RESULTS = 200
 MAX_TODOS = 20
 TODO_STATUSES = ("pending", "in_progress", "completed")
+TODO_REMINDER_ROUNDS = 3
+TODO_MAINTENANCE_REMINDER = "<reminder>Update your todos.</reminder>"
 TODO_SYMBOLS = {"pending": "○", "in_progress": "›", "completed": "✓"}
 STATE_SCHEMA_VERSION = 1
 RUN_STATUSES = ("running", "completed", "failed", "interrupted")
@@ -354,6 +369,7 @@ def validate_runtime_state(value: Any) -> dict[str, Any]:
         for name in set(interruption) - {"phase"}:
             if not isinstance(interruption[name], str) or not interruption[name]:
                 raise StateLoadError(f"interruption_info.{name} is invalid")
+    validate_persisted_message_protocol(value["messages"], current_run, interruption)
     restored = _jsonable(value)
     restored["todos"] = todos
     restored.setdefault("updated_at", None)
@@ -849,9 +865,155 @@ def _validate_tool_use(block: Any) -> tuple[str, str, dict[str, Any]]:
 
 ToolResult = tuple[str, bool, str | None]
 
+INTERRUPTED_TOOL_OUTCOME_UNKNOWN = (
+    "INTERRUPTED_TOOL_OUTCOME_UNKNOWN: The process was interrupted while this "
+    "tool call may have been executing. Runtime cannot determine whether it "
+    "produced a side effect. This is not confirmation of success or failure."
+)
+TOOL_NOT_EXECUTED_AFTER_INTERRUPTION = (
+    "TOOL_NOT_EXECUTED_AFTER_INTERRUPTION: Runtime did not execute this tool "
+    "call because the process was interrupted before it started."
+)
+
 
 def _error(code: str, message: str) -> ToolResult:
     return f"{code}: {message}", True, code
+
+
+def _tool_use_ids(content: Any) -> list[str]:
+    if not isinstance(content, list):
+        return []
+    return [
+        _value(block, "id")
+        for block in content
+        if _value(block, "type") == "tool_use"
+    ]
+
+
+def _split_tool_result_content(
+    content: Any,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if not isinstance(content, list):
+        raise ValueError("tool_result message content must be a block list")
+    results: list[dict[str, Any]] = []
+    text_blocks: list[dict[str, Any]] = []
+    saw_text = False
+    for block in content:
+        block_type = _value(block, "type")
+        if block_type == "tool_result":
+            if saw_text:
+                raise ValueError("tool_result blocks must precede text blocks")
+            tool_use_id = _value(block, "tool_use_id")
+            if not isinstance(tool_use_id, str) or not tool_use_id:
+                raise ValueError("tool_result is missing a valid tool_use_id")
+            results.append(block)
+        elif block_type == "text":
+            saw_text = True
+            text_blocks.append(block)
+        else:
+            raise ValueError("tool_result messages may only contain tool_result and text blocks")
+    return results, text_blocks
+
+
+def validate_persisted_message_protocol(
+    messages: list[dict[str, Any]],
+    current_run: dict[str, Any] | None,
+    interruption: dict[str, Any] | None,
+) -> None:
+    """Allow one durable trailing partial batch, but reject malformed persisted pairings."""
+    consumed_result_messages: set[int] = set()
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        tool_use_ids = _tool_use_ids(message.get("content"))
+        if not tool_use_ids:
+            continue
+        if any(not isinstance(item, str) or not item for item in tool_use_ids):
+            raise StateLoadError("assistant tool_use ids must be non-empty and unique")
+        if len(set(tool_use_ids)) != len(tool_use_ids):
+            raise StateLoadError("assistant tool_use ids must be non-empty and unique")
+
+        result_index = index + 1
+        if result_index < len(messages):
+            result_message = messages[result_index]
+            if result_message.get("role") != "user" or not isinstance(
+                result_message.get("content"), list
+            ):
+                raise StateLoadError(
+                    "tool_use must be followed immediately by a user content-block message"
+                )
+            try:
+                results, text_blocks = _split_tool_result_content(result_message["content"])
+            except ValueError as exc:
+                raise StateLoadError(str(exc)) from exc
+            consumed_result_messages.add(result_index)
+        else:
+            results, text_blocks = [], []
+
+        result_ids = [_value(block, "tool_use_id") for block in results]
+        if result_ids != tool_use_ids[: len(result_ids)]:
+            raise StateLoadError("tool_result ids must be an ordered prefix of tool_use ids")
+        if len(result_ids) == len(tool_use_ids):
+            continue
+
+        batch_end = result_index if result_index < len(messages) else index
+        if batch_end != len(messages) - 1:
+            raise StateLoadError("only the trailing tool batch may be incomplete")
+        if current_run is None or current_run["status"] not in {"running", "interrupted"}:
+            raise StateLoadError("a completed or failed run cannot contain an incomplete tool batch")
+        if text_blocks:
+            raise StateLoadError("an incomplete tool batch cannot contain trailing text blocks")
+
+        missing_ids = tool_use_ids[len(result_ids) :]
+        info = interruption or {}
+        phase = info.get("phase")
+        current_id = info.get("tool_use_id")
+        if phase in {"permission_wait", "tool_execution", "tool_result_recording"}:
+            if current_id != missing_ids[0]:
+                raise StateLoadError("interrupted tool must be the next unmatched tool use")
+        elif phase == "llm_call":
+            raise StateLoadError("llm_call state cannot contain an incomplete tool batch")
+
+    for index, message in enumerate(messages):
+        content = message.get("content")
+        if message.get("role") != "user" or not isinstance(content, list):
+            continue
+        if any(_value(block, "type") == "tool_result" for block in content):
+            if index not in consumed_result_messages:
+                raise StateLoadError("orphan tool_result message")
+
+
+def validate_llm_message_protocol(messages: list[dict[str, Any]]) -> None:
+    """Reject incomplete or malformed client-tool pairings before an API call."""
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        tool_use_ids = _tool_use_ids(message.get("content"))
+        if not tool_use_ids:
+            continue
+        if any(not isinstance(item, str) or not item for item in tool_use_ids):
+            raise ValueError("assistant tool_use ids must be non-empty and unique")
+        if len(set(tool_use_ids)) != len(tool_use_ids):
+            raise ValueError("assistant tool_use ids must be non-empty and unique")
+        if index + 1 >= len(messages):
+            raise ValueError("assistant tool_use message is missing its tool_result message")
+        result_message = messages[index + 1]
+        content = result_message.get("content")
+        if result_message.get("role") != "user" or not isinstance(content, list):
+            raise ValueError("tool_use must be followed immediately by a user content-block message")
+        results, _text_blocks = _split_tool_result_content(content)
+        result_ids = [_value(block, "tool_use_id") for block in results]
+        if result_ids != tool_use_ids:
+            raise ValueError("tool_result ids must exactly match the preceding tool_use ids")
+
+
+def _synthetic_tool_result(tool_use_id: str, content: str) -> dict[str, Any]:
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": content,
+        "is_error": True,
+    }
 
 
 def _required_string(tool_input: dict[str, Any], name: str) -> tuple[str | None, ToolResult | None]:
@@ -1356,6 +1518,22 @@ register_hook("PreToolUse", _authorize_pre_tool_use)
 register_hook("PostToolUse", _observe_post_tool_use)# 它只负责在生命周期终点把结果数据打包并 emit 出去。不包含显示到命令行
 
 
+def _finish_agent_loop(
+    result: dict[str, Any],
+    runtime_state: dict[str, Any] | None,
+    state_path: Path | None,
+    logger: EventLogger,
+) -> dict[str, Any]:
+    """Commit a terminal Run result as one self-consistent durable transition."""
+    if runtime_state is not None:
+        runtime_state["current_run"]["status"] = result["status"]
+        runtime_state["current_run"]["round"] = result["rounds"]
+        runtime_state["interruption_info"] = None
+        reason = "run.completed" if result["status"] == "completed" else "run.failed"
+        checkpoint(runtime_state, state_path, logger, reason)
+    return result
+
+
 def agent_loop(
     messages: list[dict[str, Any]],
     logger: EventLogger,
@@ -1372,7 +1550,28 @@ def agent_loop(
     if client is None or MODEL is None:
         return {"status": "failed", "final_text": "", "rounds": 0, "error": "CONFIG_ERROR"}
 
+    tool_rounds_without_todo_write = 0
     for round_number in range(start_round, max_rounds + 1):
+        try:
+            validate_llm_message_protocol(messages)
+        except ValueError as exc:
+            error = redact(str(exc))
+            logger.emit(
+                "llm.failed",
+                run_id,
+                model=MODEL,
+                round=round_number,
+                attempt=None,
+                error_type="PROTOCOL_ERROR",
+                error=error,
+                message=error,
+            )
+            return _finish_agent_loop({
+                "status": "failed",
+                "final_text": "",
+                "rounds": round_number,
+                "error": "PROTOCOL_ERROR",
+            }, runtime_state, state_path, logger)
         if runtime_state is not None:
             runtime_state["current_run"]["round"] = round_number
         set_interruption(runtime_state, state_path, logger, "llm_call")
@@ -1408,7 +1607,12 @@ def agent_loop(
                     message=classified["message"],
                 )
                 if not classified["retryable"]:
-                    return {"status": "failed", "final_text": "", "rounds": round_number, "error": "MODEL_CALL_ERROR"}
+                    return _finish_agent_loop(
+                        {"status": "failed", "final_text": "", "rounds": round_number, "error": "MODEL_CALL_ERROR"},
+                        runtime_state,
+                        state_path,
+                        logger,
+                    )
                 if retry_number == MAX_RETRIES:
                     logger.emit(
                         "llm.retry_exhausted",
@@ -1420,7 +1624,12 @@ def agent_loop(
                         error_code=classified["error_code"],
                         message="LLM/API retry exhausted",
                     )
-                    return {"status": "failed", "final_text": "", "rounds": round_number, "error": "RETRY_EXHAUSTED"}
+                    return _finish_agent_loop(
+                        {"status": "failed", "final_text": "", "rounds": round_number, "error": "RETRY_EXHAUSTED"},
+                        runtime_state,
+                        state_path,
+                        logger,
+                    )
                 delay = retry_delay(retry_number + 1, classified["retry_after"])
                 logger.emit(
                     "llm.retry",
@@ -1457,18 +1666,27 @@ def agent_loop(
                 tool_calls=tool_call_count,
                 **summarize(_text_from(content)),
             )
-            messages.append({"role": "assistant", "content": content})
-            clear_interruption(runtime_state, state_path, logger)
             tool_blocks = [block for block in content if _value(block, "type") == "tool_use"]
+            validated_tools = [_validate_tool_use(block) for block in tool_blocks]
             if not tool_blocks:
                 final_text = _text_from(content)
                 if not final_text:
                     raise ValueError("response has neither tool_use nor visible text")
-                return {"status": "completed", "final_text": final_text, "rounds": round_number, "error": None}
+                messages.append({"role": "assistant", "content": content})
+                return _finish_agent_loop(
+                    {"status": "completed", "final_text": final_text, "rounds": round_number, "error": None},
+                    runtime_state,
+                    state_path,
+                    logger,
+                )
 
-            tool_results = []
-            for block in tool_blocks:
-                tool_id, name, tool_input = _validate_tool_use(block)
+            messages.append({"role": "assistant", "content": content})
+            clear_interruption(runtime_state, state_path, logger)
+            tool_results: list[dict[str, Any]] = []
+            tool_result_message = {"role": "user", "content": tool_results}
+            messages.append(tool_result_message)
+            updated_todos = False
+            for tool_index, (tool_id, name, tool_input) in enumerate(validated_tools):
                 set_interruption(
                     runtime_state,
                     state_path,
@@ -1521,20 +1739,49 @@ def agent_loop(
                         file=sys.stderr,
                     )
                 result, is_error, _error_code = hook_context["tool_result"]
+                if name == "todo_write" and not is_error:
+                    updated_todos = True
                 tool_result = {"type": "tool_result", "tool_use_id": tool_id, "content": result}
                 if is_error:
                     tool_result["is_error"] = True
                 tool_results.append(tool_result)
-            messages.append({"role": "user", "content": tool_results})
+                if tool_index + 1 < len(validated_tools):
+                    next_tool_id, next_name, _next_input = validated_tools[tool_index + 1]
+                    if runtime_state is not None:
+                        runtime_state["interruption_info"] = {
+                            "phase": "permission_wait",
+                            "tool_name": next_name,
+                            "tool_use_id": next_tool_id,
+                        }
+                    checkpoint(runtime_state, state_path, logger, "tool_result.recorded")
+
+            has_active_todo = any(todo["status"] != "completed" for todo in TODO_STATE)
+            if updated_todos or not has_active_todo:
+                tool_rounds_without_todo_write = 0
+            else:
+                tool_rounds_without_todo_write += 1
+                if tool_rounds_without_todo_write >= TODO_REMINDER_ROUNDS:
+                    tool_results.append({"type": "text", "text": TODO_MAINTENANCE_REMINDER})
             if runtime_state is not None:
                 runtime_state["current_run"]["round"] = round_number + 1
-            clear_interruption(runtime_state, state_path, logger)
+                runtime_state["interruption_info"] = None
+            checkpoint(runtime_state, state_path, logger, "tool_result.recorded")
         except (TypeError, ValueError) as exc:
             error = redact(str(exc))
             logger.emit("llm.failed", run_id, model=MODEL, round=round_number, attempt=attempt, latency_seconds=latency, error_type="PROTOCOL_ERROR", error=error, message=error)
-            return {"status": "failed", "final_text": "", "rounds": round_number, "error": "PROTOCOL_ERROR"}
+            return _finish_agent_loop(
+                {"status": "failed", "final_text": "", "rounds": round_number, "error": "PROTOCOL_ERROR"},
+                runtime_state,
+                state_path,
+                logger,
+            )
 
-    return {"status": "failed", "final_text": "", "rounds": max_rounds, "error": "MAX_ROUNDS_EXCEEDED"}
+    return _finish_agent_loop(
+        {"status": "failed", "final_text": "", "rounds": max_rounds, "error": "MAX_ROUNDS_EXCEEDED"},
+        runtime_state,
+        state_path,
+        logger,
+    )
 
 
 def run_once(
@@ -1565,48 +1812,121 @@ def run_once(
         sleep_fn=sleep_fn,
     )
     event_type = "run.completed" if result["status"] == "completed" else "run.failed"
-    if runtime_state is not None:
-        runtime_state["current_run"]["status"] = result["status"]
-        runtime_state["current_run"]["round"] = result["rounds"]
-        runtime_state["interruption_info"] = None
-        checkpoint(runtime_state, state_path, logger, event_type)
     final_summary = summarize(result["final_text"])
     logger.emit(event_type, run_id, status=result["status"], rounds=result["rounds"], error=result["error"], final_result=final_summary, message=final_summary["summary"] or result["error"])
     return {**result, "run_id": run_id}
 
 
-def _recovery_text(state: dict[str, Any]) -> str:
-    run = state["current_run"]
+COMMON_RECOVERY_CONTEXT = """<recovery>
+Resume the unfinished run from the restored messages, todo state, and recorded tool results.
+Continue the current in-progress work.
+Do not re-explore already confirmed workspace state only because the process was restarted.
+</recovery>"""
+
+UNCERTAIN_TOOL_RECOVERY_CONTEXT = """<recovery>
+An in-flight tool operation may have produced a side effect whose result was not reliably recorded.
+Do not assume it succeeded or failed, and do not blindly replay it.
+Inspect only the state directly relevant to that interrupted tool, reconcile the observed result, then continue the original task.
+Do not re-scan unrelated workspace state.
+</recovery>"""
+
+PERMISSION_RECOVERY_CONTEXT = """<recovery>
+The previous run was interrupted while waiting for a permission decision.
+Do not assume permission was granted or denied.
+Resume the permission flow for the pending operation, then continue the original task.
+Do not perform unrelated workspace reconciliation.
+</recovery>"""
+
+
+def _recovery_blocks(
+    state: dict[str, Any],
+    *,
+    uncertain_tool: bool | None = None,
+    permission_pending: bool | None = None,
+) -> list[dict[str, str]]:
     info = state.get("interruption_info") or {}
     phase = info.get("phase", "unknown")
-    tool = info.get("tool_name")
-    tool_id = info.get("tool_use_id")
-    detail = f" phase={phase}."
-    if tool:
-        detail += f" The in-flight tool was {tool!r} with tool_use_id={tool_id!r}."
-    return (
-        "[Runtime recovery context] The previous process ended before this Run "
-        f"completed; resume run_id={run['run_id']!r} at round={run['round']}.{detail} "
-        "Do not assume an in-flight tool succeeded or failed and do not blindly replay it. "
-        "Inspect the real workspace with the available read/search/bash/git diff/test tools, "
-        "then continue the original task from observed facts."
-    )
+    if uncertain_tool is None:
+        uncertain_tool = phase in {"tool_execution", "tool_result_recording"}
+    if permission_pending is None:
+        permission_pending = phase == "permission_wait"
+    blocks = [{"type": "text", "text": COMMON_RECOVERY_CONTEXT}]
+    if uncertain_tool:
+        blocks.append({"type": "text", "text": UNCERTAIN_TOOL_RECOVERY_CONTEXT})
+    elif permission_pending:
+        blocks.append({"type": "text", "text": PERMISSION_RECOVERY_CONTEXT})
+    return blocks
+
+
+def _trailing_tool_batch(
+    messages: list[dict[str, Any]],
+) -> tuple[list[str], list[dict[str, Any]]] | None:
+    if not messages:
+        return None
+    assistant_index = len(messages) - 1
+    result_content: list[dict[str, Any]] | None = None
+    if messages[-1].get("role") == "user" and isinstance(messages[-1].get("content"), list):
+        assistant_index -= 1
+        result_content = messages[-1]["content"]
+    if assistant_index < 0 or messages[assistant_index].get("role") != "assistant":
+        return None
+    tool_use_ids = _tool_use_ids(messages[assistant_index].get("content"))
+    if not tool_use_ids:
+        return None
+    if result_content is None:
+        result_content = []
+        messages.append({"role": "user", "content": result_content})
+    return tool_use_ids, result_content
 
 
 def prepare_recovery_messages(state: dict[str, Any]) -> None:
-    """Create model context without inventing a Tool Result for an uncertain call."""
+    """Close a partial tool batch, then add independent recovery instructions."""
     messages = state["messages"]
     info = state.get("interruption_info") or {}
-    if info.get("phase") in {"permission_wait", "tool_execution", "tool_result_recording"}:
-        if messages and messages[-1].get("role") == "assistant":
-            content = messages[-1].get("content")
-            if isinstance(content, list) and any(_value(block, "type") == "tool_use" for block in content):
-                retained = [block for block in content if _value(block, "type") != "tool_use"]
-                if retained:
-                    messages[-1] = {"role": "assistant", "content": retained}
-                else:
-                    messages.pop()
-    messages.append({"role": "user", "content": _recovery_text(state)})
+    batch = _trailing_tool_batch(messages)
+    if batch is None:
+        messages.append({"role": "user", "content": _recovery_blocks(state)})
+        return
+
+    tool_use_ids, result_content = batch
+    try:
+        recorded_results, text_blocks = _split_tool_result_content(result_content)
+    except ValueError as exc:
+        raise StateLoadError(str(exc)) from exc
+    recorded_ids = [_value(block, "tool_use_id") for block in recorded_results]
+    if recorded_ids != tool_use_ids[: len(recorded_ids)]:
+        raise StateLoadError("partial tool results must be an ordered prefix of tool uses")
+
+    current_id = info.get("tool_use_id")
+    phase = info.get("phase")
+    missing_ids = tool_use_ids[len(recorded_ids) :]
+    uncertain_tool = (
+        phase in {"tool_execution", "tool_result_recording"}
+        and current_id in missing_ids
+    )
+    permission_pending = phase == "permission_wait" and current_id in missing_ids
+    if (uncertain_tool or permission_pending) and missing_ids[0] != current_id:
+        raise StateLoadError("interrupted tool must be the next unmatched tool use")
+    if missing_ids and text_blocks:
+        raise StateLoadError("an incomplete tool batch cannot contain trailing text blocks")
+
+    if text_blocks:
+        del result_content[len(recorded_results) :]
+    for tool_use_id in missing_ids:
+        content = (
+            INTERRUPTED_TOOL_OUTCOME_UNKNOWN
+            if uncertain_tool and tool_use_id == current_id
+            else TOOL_NOT_EXECUTED_AFTER_INTERRUPTION
+        )
+        result_content.append(_synthetic_tool_result(tool_use_id, content))
+    result_content.extend(text_blocks)
+    result_content.extend(
+        _recovery_blocks(
+            state,
+            uncertain_tool=uncertain_tool,
+            permission_pending=permission_pending,
+        )
+    )
 
 
 def resume_run(
@@ -1615,12 +1935,15 @@ def resume_run(
     logger: EventLogger,
     confirmation_fn: Callable[[str], str] = input,
     sleep_fn: Callable[[float], None] = time.sleep,
+    *,
+    recovery_prepared: bool = False,
 ) -> dict[str, Any] | None:
     run = state.get("current_run")
     if run is None or run["status"] in {"completed", "failed"}:
         return None
     previous_status = run["status"]
-    prepare_recovery_messages(state)
+    if not recovery_prepared:
+        prepare_recovery_messages(state)
     run["status"] = "running"
     logger.emit(
         "run.resumed",
@@ -1641,11 +1964,7 @@ def resume_run(
         start_round=max(1, run["round"]),
         sleep_fn=sleep_fn,
     )
-    run["status"] = result["status"]
-    run["round"] = result["rounds"]
-    state["interruption_info"] = None
     event_type = "run.completed" if result["status"] == "completed" else "run.failed"
-    checkpoint(state, state_path, logger, event_type)
     final_summary = summarize(result["final_text"])
     logger.emit(
         event_type,
@@ -1668,15 +1987,14 @@ def cli(
 ) -> int:
     global TODO_STATE
     output = output or sys.stdout
-    try:
-        configure_model()
-    except RuntimeError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
-
+    recovery_prepared = False
     if resume_path is not None:
         try:
             state = load_state(resume_path)
+            run = state.get("current_run")
+            if isinstance(run, dict) and run["status"] in {"running", "interrupted"}:
+                prepare_recovery_messages(state)
+                recovery_prepared = True
         except StateLoadError as exc:
             failure_logger = EventLogger("state-load-failure", LOG_DIR / "state-load-failures.jsonl", output)
             failure_logger.emit(
@@ -1686,6 +2004,14 @@ def cli(
                 message=str(exc),
             )
             return 3
+
+    try:
+        configure_model()
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if resume_path is not None:
         session_id = state["session_id"]
         state_path = Path(resume_path)
         TODO_STATE = _jsonable(state["todos"])
@@ -1710,7 +2036,13 @@ def cli(
     exit_status = "completed"
     try:
         if resume_path is not None:
-            resumed = resume_run(state, state_path, logger, confirmation_fn=input_fn)
+            resumed = resume_run(
+                state,
+                state_path,
+                logger,
+                confirmation_fn=input_fn,
+                recovery_prepared=recovery_prepared,
+            )
             if resumed and resumed["final_text"]:
                 print(f"Assistant> {resumed['final_text']}", file=output)
         while True:

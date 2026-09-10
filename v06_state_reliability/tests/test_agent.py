@@ -496,6 +496,23 @@ def test_todo_schema_describes_complete_minimal_state():
     ]
 
 
+def test_system_and_tool_guidance_promote_practical_moderate_todos():
+    assert "make todo_write the first tool call before discovery or mutation" in agent.SYSTEM
+    assert "even when the user does not explicitly ask for a plan or Todo" in agent.SYSTEM
+    assert "not meta-work such as planning or breaking down the task" in agent.SYSTEM
+    assert "independently actionable and verifiable stage" in agent.SYSTEM
+    assert "use separate items when files or components can progress independently" in agent.SYSTEM
+    assert "do not split simple operations into many tiny todos" in agent.SYSTEM
+
+    todo_tool = next(tool for tool in agent.TOOLS if tool["name"] == "todo_write")
+    description = todo_tool["description"]
+    assert "complex multi-step work" in description
+    assert "multi-file implementation and verification tasks" in description
+    assert "separate multi-file components when their progress can differ" in description
+    assert "omit planning as a meta-task" in description
+    assert "avoid tiny operational steps" in description
+
+
 def test_todo_write_tool_call_summary_shows_count_without_dumping_todos(runtime):
     todos = [
         {"id": "1", "content": "private first content", "status": "in_progress"},
@@ -683,6 +700,143 @@ def test_invalid_todo_update_returns_error_through_normal_runtime_and_keeps_stat
         "llm.started", "llm.completed", "tool.started", "permission.allowed",
         "tool.failed", "llm.started", "llm.completed",
     ]
+
+
+def test_todo_maintenance_reminder_nags_each_round_after_errors_and_denial(
+    runtime, monkeypatch
+):
+    agent.TODO_STATE = [
+        {"id": "build", "content": "实现功能", "status": "in_progress"},
+        {"id": "verify", "content": "验证功能", "status": "pending"},
+    ]
+    monkeypatch.setattr(agent, "ASK_RULES", [{
+        "tools": ["write_file"],
+        "matcher": lambda _args: True,
+        "message": "approval needed",
+        "describe": lambda args: f"Modify file: {args.get('path')}",
+    }])
+    scripted, logger = set_script(runtime, [
+        response(
+            block("tool_use", id="missing-1", name="read_file", input={"path": "missing.txt"}),
+            block("tool_use", id="unknown-1", name="future_tool", input={}),
+        ),
+        response(block("tool_use", id="missing-2", name="read_file", input={"path": "missing.txt"})),
+        response(block(
+            "tool_use", id="denied-3", name="write_file",
+            input={"path": "denied.txt", "content": "no"},
+        )),
+        response(block("tool_use", id="missing-4", name="read_file", input={"path": "missing.txt"})),
+        response(block("tool_use", id="missing-5", name="read_file", input={"path": "missing.txt"})),
+        response(block("text", text="done")),
+    ])
+    messages = []
+
+    result = agent.agent_loop(messages, logger, "run-1", confirmation_fn=lambda _: "n")
+
+    assert result["status"] == "completed"
+    first_round_results = messages[1]["content"]
+    second_round_results = messages[3]["content"]
+    third_round_results = messages[5]["content"]
+    fourth_round_results = messages[7]["content"]
+    fifth_round_results = messages[9]["content"]
+    assert len(first_round_results) == 2
+    assert all(item["type"] == "tool_result" for item in first_round_results)
+    assert all(item["type"] == "tool_result" for item in second_round_results)
+    for results in (third_round_results, fourth_round_results, fifth_round_results):
+        assert results[-1] == {"type": "text", "text": agent.TODO_MAINTENANCE_REMINDER}
+        assert all(
+            agent.TODO_MAINTENANCE_REMINDER not in item["content"]
+            for item in results[:-1]
+            if item["type"] == "tool_result"
+        )
+    assert third_round_results[-2]["is_error"] is True
+    assert third_round_results[-2]["content"].startswith("PERMISSION_DENIED:")
+    assert not agent.WORKSPACE_ROOT.joinpath("denied.txt").exists()
+
+
+def test_successful_todo_write_resets_nag_until_three_more_tool_rounds(runtime):
+    active = [
+        {"id": "build", "content": "实现功能", "status": "in_progress"},
+        {"id": "verify", "content": "验证功能", "status": "pending"},
+    ]
+    agent.TODO_STATE = [dict(todo) for todo in active]
+    scripted, logger = set_script(runtime, [
+        response(block("tool_use", id="read-1", name="read_file", input={"path": "missing.txt"})),
+        response(block("tool_use", id="read-2", name="read_file", input={"path": "missing.txt"})),
+        response(block("tool_use", id="read-3", name="read_file", input={"path": "missing.txt"})),
+        response(block("tool_use", id="todo-4", name="todo_write", input={"todos": active})),
+        response(block("tool_use", id="read-5", name="read_file", input={"path": "missing.txt"})),
+        response(block("tool_use", id="read-6", name="read_file", input={"path": "missing.txt"})),
+        response(block("tool_use", id="read-7", name="read_file", input={"path": "missing.txt"})),
+        response(block("text", text="done")),
+    ])
+    messages = []
+
+    result = agent.agent_loop(messages, logger, "run-1")
+
+    assert result["status"] == "completed"
+    reminder_messages = [
+        message
+        for message in messages
+        if message["role"] == "user" and isinstance(message["content"], list)
+        if any(item == {"type": "text", "text": agent.TODO_MAINTENANCE_REMINDER}
+               for item in message["content"])
+    ]
+    assert reminder_messages == [messages[5], messages[13]]
+    assert messages[7]["content"][-1]["type"] == "tool_result"
+    assert all(item["type"] == "tool_result" for item in messages[9]["content"])
+    assert all(item["type"] == "tool_result" for item in messages[11]["content"])
+
+
+def test_failed_todo_write_does_not_reset_maintenance_nag(runtime):
+    active = [
+        {"id": "build", "content": "实现功能", "status": "in_progress"},
+        {"id": "verify", "content": "验证功能", "status": "pending"},
+    ]
+    invalid = [
+        {"id": "build", "content": "实现功能", "status": "in_progress"},
+        {"id": "verify", "content": "验证功能", "status": "in_progress"},
+    ]
+    agent.TODO_STATE = [dict(todo) for todo in active]
+    _, logger = set_script(runtime, [
+        response(block("tool_use", id="read-1", name="read_file", input={"path": "missing.txt"})),
+        response(block("tool_use", id="read-2", name="read_file", input={"path": "missing.txt"})),
+        response(block("tool_use", id="todo-bad-3", name="todo_write", input={"todos": invalid})),
+        response(block("tool_use", id="read-4", name="read_file", input={"path": "missing.txt"})),
+        response(block("text", text="done")),
+    ])
+    messages = []
+
+    result = agent.agent_loop(messages, logger, "run-1")
+
+    assert result["status"] == "completed"
+    for message in (messages[5], messages[7]):
+        assert message["content"][-1] == {
+            "type": "text",
+            "text": agent.TODO_MAINTENANCE_REMINDER,
+        }
+    assert messages[5]["content"][-2]["is_error"] is True
+    assert agent.TODO_STATE == active
+
+
+def test_completed_todos_do_not_trigger_maintenance_reminder(runtime):
+    agent.TODO_STATE = [{"id": "done", "content": "已完成", "status": "completed"}]
+    _, logger = set_script(runtime, [
+        response(block("tool_use", id=f"read-{index}", name="read_file", input={"path": "missing.txt"}))
+        for index in range(1, 5)
+    ] + [response(block("text", text="done"))])
+    messages = []
+
+    agent.agent_loop(messages, logger, "run-1")
+
+    reminder_blocks = [
+        item
+        for message in messages
+        if message["role"] == "user" and isinstance(message["content"], list)
+        for item in message["content"]
+        if item["type"] == "text" and item["text"] == agent.TODO_MAINTENANCE_REMINDER
+    ]
+    assert reminder_blocks == []
 
 
 def test_default_permission_rules_use_tools_then_input_matcher(monkeypatch):
@@ -1315,10 +1469,14 @@ def test_cli_eof_and_keyboard_interrupt(monkeypatch, tmp_path):
 
 def test_missing_configuration_is_clear(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(agent, "ROOT_DIR", tmp_path)
-    assert agent.cli(lambda _: "exit") == 2
+    called = []
+    state_dir = tmp_path / "state"
+    assert agent.cli(lambda prompt: called.append(prompt) or "exit", state_dir=state_dir) == 2
     error = capsys.readouterr().err
     assert "CONFIG_ERROR" in error
     assert "API_KEY=" not in error
+    assert called == []
+    assert not state_dir.exists()
 
 
 class FakeAPIError(Exception):
@@ -1396,23 +1554,51 @@ def test_corrupted_truncated_incompatible_or_invalid_state_fails(raw, tmp_path):
     assert path.read_bytes() == before
 
 
-def test_explicit_resume_load_failure_is_observable_nonzero_and_noninteractive(tmp_path, monkeypatch):
+def test_explicit_resume_load_failure_precedes_model_configuration(
+    tmp_path, monkeypatch, capsys
+):
     path = tmp_path / "bad.json"
     path.write_text("{truncated")
     before = path.read_bytes()
     called = []
-    monkeypatch.setattr(agent, "configure_model", lambda: None)
+    monkeypatch.setattr(agent, "ROOT_DIR", tmp_path / "missing-config")
     monkeypatch.setattr(agent, "LOG_DIR", tmp_path / "logs")
     output = io.StringIO()
 
     code = agent.cli(lambda prompt: called.append(prompt) or "y", output, resume_path=path)
 
-    assert code != 0
+    assert code == 3
     assert "[State Load Error]" in output.getvalue()
+    assert "CONFIG_ERROR" not in capsys.readouterr().err
     assert called == []
     assert path.read_bytes() == before
     events = [json.loads(line) for line in (tmp_path / "logs" / "state-load-failures.jsonl").read_text().splitlines()]
     assert events[-1]["event_type"] == "state.load_failed"
+
+
+def test_valid_resume_state_then_missing_configuration_returns_config_error(
+    tmp_path, monkeypatch, capsys
+):
+    path = tmp_path / "valid.json"
+    state = agent.new_runtime_state("resume-session")
+    agent.save_state(state, path)
+    before = path.read_bytes()
+    called = []
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(agent, "ROOT_DIR", tmp_path / "missing-config")
+    monkeypatch.setattr(agent, "LOG_DIR", log_dir)
+
+    code = agent.cli(
+        lambda prompt: called.append(prompt) or "exit",
+        io.StringIO(),
+        resume_path=path,
+    )
+
+    assert code == 2
+    assert "CONFIG_ERROR" in capsys.readouterr().err
+    assert called == []
+    assert path.read_bytes() == before
+    assert not (log_dir / "state-load-failures.jsonl").exists()
 
 
 def test_retry_constants_and_backoff_hard_cap(monkeypatch):
@@ -1558,6 +1744,88 @@ def test_keyboard_interrupt_persists_interrupted_run_and_phase(tmp_path, monkeyp
     assert any(event["event_type"] == "run.interrupted" for event in events)
 
 
+def recovery_state(phase, messages=None):
+    state = agent.new_runtime_state("session-recovery")
+    state["messages"] = list(messages or [{"role": "user", "content": "original task"}])
+    state["current_run"] = {"run_id": "run-recovery", "status": "interrupted", "round": 4}
+    state["interruption_info"] = {"phase": phase}
+    if phase != "llm_call":
+        state["interruption_info"].update({"tool_name": "write_file", "tool_use_id": "pending-1"})
+    return state
+
+
+def test_llm_call_recovery_uses_only_independent_common_text_block():
+    state = recovery_state("llm_call")
+
+    agent.prepare_recovery_messages(state)
+
+    recovery = state["messages"][-1]
+    assert recovery == {
+        "role": "user",
+        "content": [{"type": "text", "text": agent.COMMON_RECOVERY_CONTEXT}],
+    }
+    text = recovery["content"][0]["text"]
+    assert "Inspect only" not in text
+    assert "reconcile" not in text.lower()
+    assert "permission" not in text.lower()
+
+
+@pytest.mark.parametrize("phase", ["tool_execution", "tool_result_recording"])
+def test_uncertain_tool_recovery_appends_targeted_context_without_breaking_tool_results(phase):
+    recorded_results = [
+        {"type": "tool_result", "tool_use_id": "recorded-1", "content": "already recorded"}
+    ]
+    state = recovery_state(
+        phase,
+        [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "recorded-1", "name": "read_file", "input": {"path": "done.txt"}}]},
+            {"role": "user", "content": recorded_results},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "pending-1", "name": "write_file", "input": {"path": "effect.txt", "content": "once"}}]},
+        ],
+    )
+
+    agent.prepare_recovery_messages(state)
+
+    assert state["messages"][1]["content"] == recorded_results
+    assert all(block["type"] == "tool_result" for block in state["messages"][1]["content"])
+    assert state["messages"][-1] == {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "pending-1",
+                "content": agent.INTERRUPTED_TOOL_OUTCOME_UNKNOWN,
+                "is_error": True,
+            },
+            {"type": "text", "text": agent.COMMON_RECOVERY_CONTEXT},
+            {"type": "text", "text": agent.UNCERTAIN_TOOL_RECOVERY_CONTEXT},
+        ],
+    }
+    assert any(
+        block.get("type") == "tool_use" and block.get("id") == "pending-1"
+        for message in state["messages"]
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if isinstance(block, dict)
+    )
+
+
+def test_permission_wait_recovery_appends_permission_specific_text_block():
+    state = recovery_state("permission_wait")
+
+    agent.prepare_recovery_messages(state)
+
+    assert state["messages"][-1] == {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": agent.COMMON_RECOVERY_CONTEXT},
+            {"type": "text", "text": agent.PERMISSION_RECOVERY_CONTEXT},
+        ],
+    }
+    assert "permission decision" in state["messages"][-1]["content"][1]["text"]
+    assert "Inspect only" not in state["messages"][-1]["content"][1]["text"]
+
+
 def test_uncertain_tool_side_effect_is_not_replayed_on_resume(runtime, tmp_path, monkeypatch):
     scripted, logger = set_script(runtime, [
         response(block("tool_use", id="write-1", name="write_file", input={"path": "effect.txt", "content": "once"})),
@@ -1586,10 +1854,619 @@ def test_uncertain_tool_side_effect_is_not_replayed_on_resume(runtime, tmp_path,
     assert len(scripted.calls) == 2
     assert (tmp_path / "effect.txt").read_text() == "once"
     recovery = persisted["messages"][-2]["content"]
-    assert "Do not assume" in recovery
-    assert "Inspect the real workspace" in recovery
-    assert not any(
+    assert recovery == [
+        {
+            "type": "tool_result",
+            "tool_use_id": "write-1",
+            "content": agent.INTERRUPTED_TOOL_OUTCOME_UNKNOWN,
+            "is_error": True,
+        },
+        {"type": "text", "text": agent.COMMON_RECOVERY_CONTEXT},
+        {"type": "text", "text": agent.UNCERTAIN_TOOL_RECOVERY_CONTEXT},
+    ]
+    assert any(
         isinstance(message.get("content"), list)
-        and any(_value.get("tool_use_id") == "write-1" for _value in message["content"] if isinstance(_value, dict))
+        and any(_value.get("id") == "write-1" for _value in message["content"] if isinstance(_value, dict))
         for message in scripted.calls[1]["messages"]
     )
+
+
+def test_multi_tool_interruption_preserves_completed_result_and_closes_batch_safely(
+    runtime, tmp_path, monkeypatch
+):
+    scripted, logger = set_script(runtime, [
+        response(
+            block("tool_use", id="tool-A", name="write_file", input={"path": "a.txt", "content": "A"}),
+            block("tool_use", id="tool-B", name="write_file", input={"path": "b.txt", "content": "B"}),
+            block("tool_use", id="tool-C", name="write_file", input={"path": "c.txt", "content": "C"}),
+        ),
+        response(block("text", text="reconciled and continued")),
+    ])
+    state, state_path, _ = durable_runtime(runtime, tmp_path)
+    original_checkpoint = agent.checkpoint
+
+    def interrupt_before_b_result(state_arg, path_arg, logger_arg, reason):
+        info = state_arg.get("interruption_info") or {}
+        if reason == "interruption.set:tool_result_recording" and info.get("tool_use_id") == "tool-B":
+            raise KeyboardInterrupt
+        return original_checkpoint(state_arg, path_arg, logger_arg, reason)
+
+    monkeypatch.setattr(agent, "checkpoint", interrupt_before_b_result)
+    with pytest.raises(KeyboardInterrupt):
+        agent.run_once(state["messages"], "write A, B, and C", logger, runtime_state=state, state_path=state_path)
+
+    assert (tmp_path / "a.txt").read_text() == "A"
+    assert (tmp_path / "b.txt").read_text() == "B"
+    assert not (tmp_path / "c.txt").exists()
+    persisted = agent.load_state(state_path)
+    partial_results = persisted["messages"][-1]["content"]
+    assert [item["tool_use_id"] for item in partial_results] == ["tool-A"]
+    persisted["current_run"]["status"] = "interrupted"
+    original_checkpoint(persisted, state_path, logger, "run.interrupted")
+
+    monkeypatch.setattr(agent, "checkpoint", original_checkpoint)
+    result = agent.resume_run(persisted, state_path, logger, sleep_fn=lambda _: None)
+
+    assert result["status"] == "completed"
+    assert len(scripted.calls) == 2
+    assert (tmp_path / "a.txt").read_text() == "A"
+    assert (tmp_path / "b.txt").read_text() == "B"
+    assert not (tmp_path / "c.txt").exists()
+    resumed_messages = scripted.calls[1]["messages"]
+    assistant = resumed_messages[-3]
+    recovery = resumed_messages[-2]
+    assert [item["id"] for item in assistant["content"]] == ["tool-A", "tool-B", "tool-C"]
+    assert recovery["content"][0]["tool_use_id"] == "tool-A"
+    assert recovery["content"][0]["content"].startswith("Wrote 1 characters")
+    assert recovery["content"][1] == {
+        "type": "tool_result",
+        "tool_use_id": "tool-B",
+        "content": agent.INTERRUPTED_TOOL_OUTCOME_UNKNOWN,
+        "is_error": True,
+    }
+    assert recovery["content"][2] == {
+        "type": "tool_result",
+        "tool_use_id": "tool-C",
+        "content": agent.TOOL_NOT_EXECUTED_AFTER_INTERRUPTION,
+        "is_error": True,
+    }
+    assert recovery["content"][3:] == [
+        {"type": "text", "text": agent.COMMON_RECOVERY_CONTEXT},
+        {"type": "text", "text": agent.UNCERTAIN_TOOL_RECOVERY_CONTEXT},
+    ]
+    agent.validate_llm_message_protocol(resumed_messages)
+
+
+def test_checkpoint_after_completed_tool_points_to_next_pending_tool(
+    runtime, tmp_path, monkeypatch
+):
+    scripted, logger = set_script(runtime, [
+        response(
+            block("tool_use", id="tool-A", name="write_file", input={"path": "a.txt", "content": "A"}),
+            block("tool_use", id="tool-B", name="write_file", input={"path": "b.txt", "content": "B"}),
+            block("tool_use", id="tool-C", name="write_file", input={"path": "c.txt", "content": "C"}),
+        ),
+        response(block("text", text="continued safely")),
+    ])
+    state, state_path, _ = durable_runtime(runtime, tmp_path)
+    original_checkpoint = agent.checkpoint
+
+    def interrupt_after_a_is_durable(state_arg, path_arg, logger_arg, reason):
+        result_ids = [
+            item.get("tool_use_id")
+            for item in state_arg["messages"][-1].get("content", [])
+            if isinstance(item, dict) and item.get("type") == "tool_result"
+        ]
+        saved = original_checkpoint(state_arg, path_arg, logger_arg, reason)
+        if reason == "tool_result.recorded" and result_ids == ["tool-A"]:
+            raise KeyboardInterrupt
+        return saved
+
+    monkeypatch.setattr(agent, "checkpoint", interrupt_after_a_is_durable)
+    with pytest.raises(KeyboardInterrupt):
+        agent.run_once(
+            state["messages"],
+            "write A, B, and C",
+            logger,
+            runtime_state=state,
+            state_path=state_path,
+        )
+
+    persisted = agent.load_state(state_path)
+    assert [item["tool_use_id"] for item in persisted["messages"][-1]["content"]] == ["tool-A"]
+    assert persisted["interruption_info"] == {
+        "phase": "permission_wait",
+        "tool_name": "write_file",
+        "tool_use_id": "tool-B",
+    }
+    assert (tmp_path / "a.txt").read_text() == "A"
+    assert not (tmp_path / "b.txt").exists()
+    assert not (tmp_path / "c.txt").exists()
+
+    persisted["current_run"]["status"] = "interrupted"
+    original_checkpoint(persisted, state_path, logger, "run.interrupted")
+    monkeypatch.setattr(agent, "checkpoint", original_checkpoint)
+    result = agent.resume_run(persisted, state_path, logger, sleep_fn=lambda _: None)
+
+    assert result["status"] == "completed"
+    assert len(scripted.calls) == 2
+    assert (tmp_path / "a.txt").read_text() == "A"
+    assert not (tmp_path / "b.txt").exists()
+    assert not (tmp_path / "c.txt").exists()
+
+
+def test_last_tool_result_checkpoint_advances_round_before_interruption(
+    runtime, tmp_path, monkeypatch
+):
+    scripted, logger = set_script(runtime, [
+        response(block("tool_use", id="tool-A", name="write_file", input={"path": "a.txt", "content": "A"})),
+        response(block("text", text="continued in round two")),
+    ])
+    state, state_path, _ = durable_runtime(runtime, tmp_path)
+    original_checkpoint = agent.checkpoint
+
+    def interrupt_after_batch_is_durable(state_arg, path_arg, logger_arg, reason):
+        saved = original_checkpoint(state_arg, path_arg, logger_arg, reason)
+        if reason == "tool_result.recorded":
+            raise KeyboardInterrupt
+        return saved
+
+    monkeypatch.setattr(agent, "checkpoint", interrupt_after_batch_is_durable)
+    with pytest.raises(KeyboardInterrupt):
+        agent.run_once(
+            state["messages"],
+            "write A",
+            logger,
+            runtime_state=state,
+            state_path=state_path,
+        )
+
+    persisted = agent.load_state(state_path)
+    assert persisted["current_run"]["round"] == 2
+    assert persisted["interruption_info"] is None
+    assert persisted["messages"][-1]["content"][0]["tool_use_id"] == "tool-A"
+
+    persisted["current_run"]["status"] = "interrupted"
+    original_checkpoint(persisted, state_path, logger, "run.interrupted")
+    monkeypatch.setattr(agent, "checkpoint", original_checkpoint)
+    result = agent.resume_run(persisted, state_path, logger, sleep_fn=lambda _: None)
+
+    assert result["status"] == "completed"
+    started = [event for event in read_events(logger) if event["event_type"] == "llm.started"]
+    assert [event["data"]["round"] for event in started] == [1, 2]
+    assert (tmp_path / "a.txt").read_text() == "A"
+
+
+def test_completed_response_is_durable_before_control_returns(
+    runtime, tmp_path, monkeypatch
+):
+    scripted, logger = set_script(runtime, [response(block("text", text="finished"))])
+    state, state_path, _ = durable_runtime(runtime, tmp_path)
+    original_checkpoint = agent.checkpoint
+
+    def interrupt_after_completion_is_durable(state_arg, path_arg, logger_arg, reason):
+        saved = original_checkpoint(state_arg, path_arg, logger_arg, reason)
+        if reason == "run.completed":
+            raise KeyboardInterrupt
+        return saved
+
+    monkeypatch.setattr(agent, "checkpoint", interrupt_after_completion_is_durable)
+    with pytest.raises(KeyboardInterrupt):
+        agent.run_once(
+            state["messages"],
+            "finish now",
+            logger,
+            runtime_state=state,
+            state_path=state_path,
+        )
+
+    persisted = agent.load_state(state_path)
+    assert persisted["current_run"] == {
+        "run_id": state["current_run"]["run_id"],
+        "status": "completed",
+        "round": 1,
+    }
+    assert persisted["interruption_info"] is None
+    assert persisted["messages"][-1]["content"][0]["text"] == "finished"
+
+    monkeypatch.setattr(agent, "checkpoint", original_checkpoint)
+    assert agent.resume_run(persisted, state_path, logger) is None
+    assert len(scripted.calls) == 1
+
+
+def test_max_round_boundary_after_tool_batch_cannot_repeat_last_round(
+    runtime, tmp_path, monkeypatch
+):
+    scripted, logger = set_script(runtime, [
+        response(block("tool_use", id="tool-A", name="write_file", input={"path": "a.txt", "content": "A"})),
+    ])
+    state, state_path, _ = durable_runtime(runtime, tmp_path)
+    state["current_run"] = {"run_id": "run-max", "status": "running", "round": 1}
+    agent.checkpoint(state, state_path, logger, "run.started")
+    original_checkpoint = agent.checkpoint
+
+    def interrupt_after_batch_is_durable(state_arg, path_arg, logger_arg, reason):
+        saved = original_checkpoint(state_arg, path_arg, logger_arg, reason)
+        if reason == "tool_result.recorded":
+            raise KeyboardInterrupt
+        return saved
+
+    monkeypatch.setattr(agent, "checkpoint", interrupt_after_batch_is_durable)
+    with pytest.raises(KeyboardInterrupt):
+        agent.agent_loop(
+            state["messages"],
+            logger,
+            "run-max",
+            max_rounds=1,
+            runtime_state=state,
+            state_path=state_path,
+        )
+
+    persisted = agent.load_state(state_path)
+    assert persisted["current_run"] == {"run_id": "run-max", "status": "running", "round": 2}
+    agent.prepare_recovery_messages(persisted)
+    monkeypatch.setattr(agent, "checkpoint", original_checkpoint)
+    result = agent.agent_loop(
+        persisted["messages"],
+        logger,
+        "run-max",
+        max_rounds=1,
+        start_round=persisted["current_run"]["round"],
+        runtime_state=persisted,
+        state_path=state_path,
+    )
+
+    assert result["error"] == "MAX_ROUNDS_EXCEEDED"
+    assert len(scripted.calls) == 1
+    assert persisted["current_run"]["status"] == "failed"
+    assert agent.load_state(state_path)["current_run"]["status"] == "failed"
+
+
+def test_every_successful_checkpoint_in_multi_tool_run_is_loadable(
+    runtime, tmp_path, monkeypatch
+):
+    set_script(runtime, [
+        response(
+            block("tool_use", id="tool-A", name="write_file", input={"path": "a.txt", "content": "A"}),
+            block("tool_use", id="tool-B", name="write_file", input={"path": "b.txt", "content": "B"}),
+        ),
+        response(block("text", text="done")),
+    ])
+    state, state_path, logger = durable_runtime(runtime, tmp_path)
+    original_checkpoint = agent.checkpoint
+    reasons = []
+
+    def validate_after_checkpoint(state_arg, path_arg, logger_arg, reason):
+        result = original_checkpoint(state_arg, path_arg, logger_arg, reason)
+        agent.load_state(path_arg)
+        reasons.append(reason)
+        return result
+
+    monkeypatch.setattr(agent, "checkpoint", validate_after_checkpoint)
+    result = agent.run_once(
+        state["messages"],
+        "write two files",
+        logger,
+        runtime_state=state,
+        state_path=state_path,
+    )
+
+    assert result["status"] == "completed"
+    assert reasons.count("tool_result.recorded") == 2
+    assert reasons[-1] == "run.completed"
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        [{"role": "assistant", "content": [{"type": "tool_use", "id": "A", "name": "read_file", "input": {}}]}],
+        [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "A", "name": "read_file", "input": {}},
+                {"type": "tool_use", "id": "B", "name": "read_file", "input": {}},
+            ]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "A", "content": "done"}]},
+        ],
+        [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "A", "name": "read_file", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "text", "text": "before"},
+                {"type": "tool_result", "tool_use_id": "A", "content": "done"},
+            ]},
+        ],
+        [
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "A", "name": "read_file", "input": {}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "other", "content": "done"}]},
+        ],
+    ],
+)
+def test_pairing_preflight_rejects_incomplete_or_invalid_messages_without_api_call(
+    messages, runtime
+):
+    scripted, logger = runtime
+
+    result = agent.agent_loop(messages, logger, "run-invalid-pairing")
+
+    assert result["error"] == "PROTOCOL_ERROR"
+    assert scripted.calls == []
+
+
+def test_pairing_preflight_allows_complete_multi_tool_results_followed_by_text(runtime):
+    scripted, logger = set_script(runtime, [response(block("text", text="continued"))])
+    messages = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "A", "name": "read_file", "input": {}},
+            {"type": "tool_use", "id": "B", "name": "read_file", "input": {}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "A", "content": "a"},
+            {"type": "tool_result", "tool_use_id": "B", "content": "b"},
+            {"type": "text", "text": "<reminder>continue</reminder>"},
+        ]},
+    ]
+
+    result = agent.agent_loop(messages, logger, "run-valid-pairing")
+
+    assert result["status"] == "completed"
+    assert len(scripted.calls) == 1
+
+
+def test_recovery_marks_all_tools_not_executed_when_no_tool_started():
+    state = recovery_state(
+        "llm_call",
+        [{"role": "assistant", "content": [
+            {"type": "tool_use", "id": "A", "name": "write_file", "input": {}},
+            {"type": "tool_use", "id": "B", "name": "write_file", "input": {}},
+        ]}],
+    )
+    state["interruption_info"] = None
+
+    agent.prepare_recovery_messages(state)
+
+    content = state["messages"][-1]["content"]
+    assert [item["tool_use_id"] for item in content[:2]] == ["A", "B"]
+    assert all(item["content"] == agent.TOOL_NOT_EXECUTED_AFTER_INTERRUPTION for item in content[:2])
+    assert content[2:] == [{"type": "text", "text": agent.COMMON_RECOVERY_CONTEXT}]
+    agent.validate_llm_message_protocol(state["messages"])
+
+
+def test_durable_result_wins_over_tool_result_recording_phase():
+    state = recovery_state(
+        "tool_result_recording",
+        [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "A", "name": "write_file", "input": {}},
+                {"type": "tool_use", "id": "B", "name": "write_file", "input": {}},
+                {"type": "tool_use", "id": "C", "name": "write_file", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "A", "content": "a"},
+                {"type": "tool_result", "tool_use_id": "B", "content": "b"},
+            ]},
+        ],
+    )
+    state["interruption_info"]["tool_use_id"] = "B"
+
+    agent.prepare_recovery_messages(state)
+
+    content = state["messages"][-1]["content"]
+    assert content[0]["content"] == "a"
+    assert content[1]["content"] == "b"
+    assert content[2] == {
+        "type": "tool_result",
+        "tool_use_id": "C",
+        "content": agent.TOOL_NOT_EXECUTED_AFTER_INTERRUPTION,
+        "is_error": True,
+    }
+    assert content[3:] == [{"type": "text", "text": agent.COMMON_RECOVERY_CONTEXT}]
+    agent.validate_llm_message_protocol(state["messages"])
+
+
+def test_complete_tool_results_with_reminder_survive_llm_call_recovery():
+    state = recovery_state(
+        "llm_call",
+        [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "A", "name": "read_file", "input": {}},
+                {"type": "tool_use", "id": "B", "name": "read_file", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "A", "content": "a"},
+                {"type": "tool_result", "tool_use_id": "B", "content": "b"},
+                {"type": "text", "text": agent.TODO_MAINTENANCE_REMINDER},
+            ]},
+        ],
+    )
+
+    agent.validate_runtime_state(state)
+    agent.prepare_recovery_messages(state)
+
+    content = state["messages"][-1]["content"]
+    assert [block["tool_use_id"] for block in content[:2]] == ["A", "B"]
+    assert content[2] == {"type": "text", "text": agent.TODO_MAINTENANCE_REMINDER}
+    assert content[3] == {"type": "text", "text": agent.COMMON_RECOVERY_CONTEXT}
+    agent.validate_llm_message_protocol(state["messages"])
+
+
+def test_multi_tool_recovery_can_be_resumed_again_during_llm_call():
+    state = recovery_state(
+        "tool_execution",
+        [
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "A", "name": "write_file", "input": {}},
+                {"type": "tool_use", "id": "B", "name": "write_file", "input": {}},
+                {"type": "tool_use", "id": "C", "name": "write_file", "input": {}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "A", "content": "a"},
+            ]},
+        ],
+    )
+    state["interruption_info"]["tool_use_id"] = "B"
+
+    agent.prepare_recovery_messages(state)
+    first_content = list(state["messages"][-1]["content"])
+    state["interruption_info"] = {"phase": "llm_call"}
+    agent.validate_runtime_state(state)
+    agent.prepare_recovery_messages(state)
+
+    content = state["messages"][-1]["content"]
+    assert content[: len(first_content)] == first_content
+    assert [block["tool_use_id"] for block in content[:3]] == ["A", "B", "C"]
+    assert sum(block.get("is_error", False) for block in content[:3]) == 2
+    assert content[-1] == {"type": "text", "text": agent.COMMON_RECOVERY_CONTEXT}
+    agent.validate_llm_message_protocol(state["messages"])
+
+
+@pytest.mark.parametrize(
+    "messages,status,interruption",
+    [
+        (
+            [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "A", "name": "read_file", "input": {}},
+                    {"type": "tool_use", "id": "B", "name": "read_file", "input": {}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "B", "content": "wrong"},
+                ]},
+            ],
+            "running",
+            {"phase": "tool_execution", "tool_name": "read_file", "tool_use_id": "A"},
+        ),
+        (
+            [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "A", "name": "read_file", "input": {}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "too early"},
+                    {"type": "tool_result", "tool_use_id": "A", "content": "a"},
+                ]},
+            ],
+            "running",
+            {"phase": "llm_call"},
+        ),
+        (
+            [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "A", "name": "read_file", "input": {}},
+                    {"type": "tool_use", "id": "B", "name": "read_file", "input": {}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "A", "content": "a"},
+                    {"type": "text", "text": "partial cannot have text"},
+                ]},
+            ],
+            "interrupted",
+            {"phase": "tool_execution", "tool_name": "read_file", "tool_use_id": "B"},
+        ),
+        (
+            [
+                {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": "A", "name": "read_file", "input": {}},
+                    {"type": "tool_use", "id": "B", "name": "read_file", "input": {}},
+                ]},
+                {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": "A", "content": "a"},
+                ]},
+            ],
+            "completed",
+            None,
+        ),
+    ],
+)
+def test_persisted_message_validation_rejects_invalid_pairings(
+    messages, status, interruption
+):
+    state = agent.new_runtime_state("invalid-pairing")
+    state["messages"] = messages
+    state["current_run"] = {"run_id": "run", "status": status, "round": 2}
+    state["interruption_info"] = interruption
+
+    with pytest.raises(agent.StateLoadError):
+        agent.validate_runtime_state(state)
+
+
+def test_cli_invalid_persisted_pairing_uses_state_load_failure_path(
+    tmp_path, monkeypatch, capsys
+):
+    state = agent.new_runtime_state("invalid-pairing")
+    state["current_run"] = {"run_id": "run", "status": "running", "round": 2}
+    state["interruption_info"] = {
+        "phase": "tool_execution",
+        "tool_name": "read_file",
+        "tool_use_id": "A",
+    }
+    state["messages"] = [
+        {"role": "assistant", "content": [
+            {"type": "tool_use", "id": "A", "name": "read_file", "input": {}},
+            {"type": "tool_use", "id": "B", "name": "read_file", "input": {}},
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "B", "content": "wrong"},
+        ]},
+    ]
+    path = tmp_path / "invalid.json"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    before = path.read_bytes()
+    called = []
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(agent, "ROOT_DIR", tmp_path / "missing-config")
+    monkeypatch.setattr(agent, "LOG_DIR", log_dir)
+    output = io.StringIO()
+
+    code = agent.cli(
+        lambda prompt: called.append(prompt) or "y",
+        output,
+        resume_path=path,
+    )
+
+    assert code == 3
+    assert "[State Load Error]" in output.getvalue()
+    assert "CONFIG_ERROR" not in capsys.readouterr().err
+    assert called == []
+    assert path.read_bytes() == before
+    events = [
+        json.loads(line)
+        for line in (log_dir / "state-load-failures.jsonl").read_text().splitlines()
+    ]
+    assert events[-1]["event_type"] == "state.load_failed"
+    assert not any(event["event_type"] == "state.restored" for event in events)
+
+
+def test_cli_resume_preparation_state_load_error_is_defensively_reported(
+    tmp_path, monkeypatch, capsys
+):
+    state = recovery_state("llm_call")
+    path = tmp_path / "valid.json"
+    agent.save_state(state, path)
+    before = path.read_bytes()
+    called = []
+    log_dir = tmp_path / "logs"
+    monkeypatch.setattr(agent, "ROOT_DIR", tmp_path / "missing-config")
+    monkeypatch.setattr(agent, "LOG_DIR", log_dir)
+
+    def fail_preparation(_state):
+        raise agent.StateLoadError("defensive preparation failure")
+
+    monkeypatch.setattr(agent, "prepare_recovery_messages", fail_preparation)
+    output = io.StringIO()
+
+    code = agent.cli(
+        lambda prompt: called.append(prompt) or "y",
+        output,
+        resume_path=path,
+    )
+
+    assert code == 3
+    assert "[State Load Error]" in output.getvalue()
+    assert "CONFIG_ERROR" not in capsys.readouterr().err
+    assert called == []
+    assert path.read_bytes() == before
+    events = [
+        json.loads(line)
+        for line in (log_dir / "state-load-failures.jsonl").read_text().splitlines()
+    ]
+    assert events[-1]["event_type"] == "state.load_failed"
+    assert not any(event["event_type"] == "state.restored" for event in events)

@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Expense Splitter</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app">
+        <header>
+            <h1>💰 Expense Splitter</h1>
+            <p class="tagline">Split expenses fairly with friends</p>
+        </header>
+
+        <main>
+            <!-- Add People -->
+            <section class="card" aria-labelledby="people-heading">
+                <h2 id="people-heading">People</h2>
+                <form id="add-person-form" class="inline-form">
+                    <input type="text" id="person-name" placeholder="Enter name..." autocomplete="off" required>
+                    <button type="submit" class="btn btn-primary">Add</button>
+                </form>
+                <ul id="people-list" class="people-list"></ul>
+            </section>
+
+            <!-- Add Expense -->
+            <section class="card" aria-labelledby="expense-heading">
+                <h2 id="expense-heading">Add Expense</h2>
+                <form id="add-expense-form" class="expense-form">
+                    <input type="text" id="expense-desc" placeholder="Description (e.g. Dinner)" autocomplete="off" required>
+                    <input type="number" id="expense-amount" placeholder="Amount" min="0.01" step="0.01" required>
+                    <select id="expense-payer" required></select>
+                    <div class="split-group">
+                        <span class="split-label">Split equally between:</span>
+                        <div id="split-checkboxes" class="checkbox-group"></div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Add Expense</button>
+                </form>
+            </section>
+
+            <!-- Summary -->
+            <section class="card" aria-labelledby="summary-heading">
+                <h2 id="summary-heading">Summary</h2>
+                <div id="summary"></div>
+            </section>
+
+            <!-- Settlements -->
+            <section class="card" aria-labelledby="settlements-heading">
+                <h2 id="settlements-heading">Who owes whom</h2>
+                <ul id="settlements-list" class="settlements-list"></ul>
+            </section>
+
+            <button id="reset-btn" class="btn btn-danger">Reset All</button>
+        </main>
+
+        <footer>
+            <p>Built with HTML, CSS &amp; vanilla JavaScript</p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
