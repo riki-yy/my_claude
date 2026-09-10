@@ -789,7 +789,7 @@ Agent 如何显式记录准备做什么、正在做什么以及已经完成什�
    - 预期最终效果：文件不存在，Todo 没有被 Runtime 根据 Tool Result 自动完成，最终总结明确说明未完成原因。
    - 验收重点：验证 Todo 只有三种状态、完成必须显式写入，以及 Todo、Permission 和 V04 Hooks 各自职责不变。
 
-### V06：状态与可靠性（已完成，最终验收 PASS）
+### V06：状态与可靠性
 
 **要解决的问题**
 
@@ -827,8 +827,7 @@ V06 分开解决两个不能混为一谈的可靠性问题：
 - `failed` 表示 Run 已明确失败并结束；恢复时保留失败事实，不自动把它当作 running 继续。
 - `interrupted` 表示 Runtime 捕获到中断，并已成功持久化中断状态；作为明确中断的 unfinished Run 恢复。
 - running/interrupted Run 恢复同一个 `run_id` 和原 `round`，不能创建新 Run 或重置计数来绕过 `MAX_ROUNDS`；Runtime 根据 `interruption_info` 构造最小 recovery context，再让模型判断如何继续。
-- unfinished Run 的 recovery context 使用独立、模型可见的 text block，不拼接进 `tool_result.content`。`llm_call` 只注入公共继续指令；`tool_execution / tool_result_recording` 追加 uncertain Tool 的 targeted reconciliation；`permission_wait` 追加 permission-specific 指令。
-- 如果中断发生在可能产生 Tool 副作用的阶段，不自动重放 Tool；恢复后只让模型检查与 uncertain Tool 直接相关的真实 workspace 状态，再决定后续动作，不因 restart 扫描无关 workspace。
+- 如果中断发生在可能产生 Tool 副作用的阶段，不自动重放 Tool；恢复后先让模型使用现有工具检查真实 workspace，再决定后续动作。
 
 #### 最小 Persisted Runtime State
 
@@ -867,8 +866,6 @@ updated_at            # 可选 observability/debug metadata
 - Runtime 在关键一致性边界保存完整的最小 Runtime State，至少包括：user message 已追加；Run status 变化；LLM response 已可靠追加；Tool Result 已可靠记录；Todo State 成功变化；`interruption_info` 设置或清除；Run completed、failed 或 interrupted。
 - 对可能产生不确定副作用的阶段，在进入阶段前设置 `interruption_info` 并 checkpoint。Checkpoint 的先后关系必须让恢复逻辑能够区分“尚未进入关键阶段”和“可能已经执行但结果尚未可靠记录”。
 - Todo checkpoint 只发生在 V05 handler 已完成全量校验并成功整体替换之后；失败的 Todo 更新不改变持久化 Todo State。
-- 每个成功 checkpoint 都必须单独形成自洽、可加载和可安全恢复的 snapshot；messages 中已经 durable 的事实必须与 `interruption_info`、`current_run.round` 和 `current_run.status` 描述同一个一致性边界，不能依赖后续第二次 checkpoint 修正中间状态。
-- multi-tool Round 中，非末尾 Tool 的真实 Result 与下一 Tool 的 `permission_wait` 现场一起 checkpoint；最后一个 Tool Result 与完整聚合消息、下一 Round 和已清除的 interruption 一起 checkpoint。final assistant response 与 terminal Run status 同一次提交，避免重启重复已完成 Round 或已完成 Run。
 
 #### Atomic Persistence
 
@@ -894,19 +891,6 @@ restart
 - 如果 previous Run interrupted：视为已明确记录中断的 unfinished Run，恢复同一个 Run 和 round，根据 `interruption_info` 构造最小 recovery context，重新让模型判断如何继续。
 - 如果 previous Run failed：恢复 Session 上下文并保留失败事实，不自动继续该 Run；后续动作由新的用户输入触发。
 - recovery context 只陈述已可靠持久化的事实、in-flight phase 及副作用不确定性；不得把 `interruption_info` 伪装成 Tool Result，也不得声称 Tool 成功或失败。
-- 显式 `--resume` 必须先执行 `load_state() → validate_runtime_state()`，合法 state 才进入模型配置和恢复流程；因此 state 损坏与模型配置同时无效时，仍优先形成 `State Load Error + state.load_failed + non-zero exit`。
-
-#### Multi-tool durability 与消息协议边界
-
-- 同一 assistant Round 含多个 `tool_use` 时，已完成 Tool 的真实 Result 作为紧邻 user Tool Result 聚合消息中的有序前缀逐项持久化；unfinished Run 的最后一批允许作为 durable partial batch 存在于 state file。
-- resume 以 durable Result 为完成事实：已记录 Result 的 Tool 不重复执行；当前可能已产生副作用但 Result 未可靠记录的 Tool 补充 `is_error: true` 的 outcome-unknown synthetic Result；其后尚未执行的 Tool 补充 `is_error: true` 的 not-executed synthetic Result。synthetic Result 只描述对应 `tool_use_id` 的 execution outcome，如何 reconcile/continue 仍由独立 recovery text blocks 表达。
-- persisted-state validation 区分合法 partial batch、合法完整 Tool Results 加尾随独立 text blocks，以及真正非法的错序、缺失或 ID 不匹配 pairing。恢复必须先补齐合法配对、追加 recovery blocks 并 checkpoint，之后才允许调用模型。
-- `client.messages.create()` 前执行严格 pairing preflight：任何 LLM call 前，messages 中不得存在 incomplete、错序、重复、未知 ID 或 Result/text block 顺序非法的 multi-tool pairing。
-
-#### V05 Todo 使用 refinement
-
-- V06 保留 `todo_write` 的 soft-constraint 定位，同时完善继承自 V05 的使用指导：复杂、多步骤、多文件任务应主动创建 Todo；Todo 描述实际、可独立推进和验证的交付阶段，不使用“规划任务”元 Todo，也不拆成大量微操作。
-- 存在 active Todo 时，连续三个含 Tool Call 的 Agent Round 未成功调用 `todo_write`，从第三轮开始以独立 text block 注入 `<reminder>Update your todos.</reminder>`；之后每个未维护 Tool Round 持续 nag，直到成功 `todo_write` 后 reset。Runtime 不自动推断完成状态、不自动修改 Todo，也不把 Todo 变成 Workflow。
 
 #### Workspace Reconciliation
 
@@ -946,26 +930,17 @@ restart
 - atomic write failure 时不破坏上一份正式 state file。
 - 显式 resume 遇到 corrupted、truncated、schema incompatible 或必需字段非法时，输出 `State Load Error`、写入 state load failure event、保持原文件不变并以 non-zero exit 结束；不创建空 Session，也不进入 Y/N 流程。
 - `KeyboardInterrupt` 能留下可解释的 interruption 状态。
-- 每个成功的正式 checkpoint 都能被 `load_state()` 接受；重点覆盖 Result、下一 Tool phase、Round 推进和 terminal status 的 transition snapshot 自洽性。
 - completed Run restore 后只等待新输入，不重跑旧任务。
 - running Run restore 时按 unexpected unfinished Run 处理，保留同一 Run 和 round，并重新交给模型判断。
 - interrupted Run restore 时按明确中断的 unfinished Run 处理，保留同一 Run 和 round，并重新交给模型判断。
 - failed Run restore 时保留失败事实，不自动继续，也不改写为 running。
 - uncertain Tool side effect 不自动 replay，模型先 inspect workspace 再继续。
-- multi-tool failure window 覆盖 `A completed → B interrupted → C not executed`，并验证 A 的真实 Result 保留、B outcome unknown、C not executed、无自动 replay，以及完整 pairing 后才允许 LLM request。
-- 覆盖 A Result 已 checkpoint 但 B 尚未进入、最后 Result 已 checkpoint 但下一 Round 尚未调用、final response 已 checkpoint 但控制尚未返回，以及 `MAX_ROUNDS` 最后一批 Tool Result 后 restart 等 transition window。
 - retryable LLM/API error 在同一 Round 内最多产生 5 个 Attempt；覆盖真实的 429/transient 分类，并验证 `attempt=1..5` 与 initial/retry 1..4 的映射。
 - 验证 `MAX_RETRIES = 4`、`BASE_DELAY = 1.0s`、`MAX_DELAY = 16.0s`、`JITTER_RATIO = 0.25`；`MAX_RETRIES` 不包含 initial request，配置层不存在 `MAX_ATTEMPTS`。
 - 没有有效 `Retry-After` 时，验证 retry 1/2/3/4 的基础 delay 为 `1s / 2s / 4s / 8s`，在其上增加 `0~25%` jitter，且最终实际 sleep 不超过 `16s`。
 - 有效 `Retry-After` 优先于本地 backoff，但验证最终实际等待仍受 `MAX_DELAY = 16s` 硬上限约束。
 - retry 4 仍失败后明确产生 retry exhausted，current Run 进入 `failed`，且整个过程不增加 Agent Round、不额外消耗 `MAX_ROUNDS`、不继续调用模型。
 - `FILE_NOT_FOUND`、`INVALID_TOOL_INPUT`、`PERMISSION_DENIED` 等 Tool/User Error 不触发 API retry。
-
-**最终验收状态**
-
-- V06 Fake Model 全量自动测试：`220 passed`。
-- `git diff --check` 通过；既有真实 API Demo 证据覆盖正常 Session restore、Tool 中断后的 workspace reconciliation、429/transient retry，以及 Tool/User Error 不触发 API retry。
-- 最终 blocker closure 已确认 multi-tool 中间 Result、最后 Tool Result/Round 推进、final response/terminal status 和 `MAX_ROUNDS` transition window 均关闭；V06 到此停止，不提前进入 V07。
 
 **本版明确不做**
 
