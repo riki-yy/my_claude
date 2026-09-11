@@ -986,30 +986,158 @@ V06 使 Session/Run 可以可靠延续，但不会控制持续增长的 messages
 
 **要解决的问题**
 
-如何在上下文超限前控制大小，同时保留继续完成任务所需的信息？
+如何在每次 LLM 请求前控制实际 active context 的大小，防止单个 Tool Result 或长期累积的历史撑爆模型上下文，同时保留继续完成当前 coding task 所需的信息，并在预估仍未避免真实 `prompt_too_long` 时有限恢复？
 
 **本版目标**
 
-- 请求前估算 Context Budget。
-- 优先缩短旧的大型 Tool Result。
-- 必要时总结较旧历史。
-- 保持 Tool Use 与 Tool Result 配对完整。
+- 在每次 `client.messages.create()` 前，对实际将发送的 system prompt、messages、tool definitions 和其他请求内容统一进行 Context Budget 估算与决策，而不是以 `len(messages)` 代替上下文大小。
+- 用 Tool Result Budget 防止单个或当前 batch 的超大结果直接撑爆 active context；完整结果可靠持久化后，只在 active context 保留有限 preview、原始长度和可重新读取的 path/reference。
+- 在 Full Compact 前，用 MicroCompact 优先缩减模型已经消费、且随任务推进变旧的大型 Tool Result payload；保留协议 block 与重新访问完整结果的能力。
+- 只有低成本处理后 active context 仍达到 trigger threshold，才在合法边界上执行 Full Compact，并压缩到低于 threshold 的 target watermark，为后续工作保留 headroom。
+- Full Compact 以结构化 Summary 替换较旧历史，同时保留 recent raw context 和继续当前任务所需的有效状态/上下文。
+- 与 V06 的 LLM/API error classification 衔接：真实 `prompt_too_long` 或等价 Context Overflow 允许在同一 Agent Round 内进行一次受控的 PTL Recovery compact/retry，持续失败时明确结束。
+- 复用现有 CLI、JSONL、messages persistence 与 checkpoint，形成可测试、可恢复且不泄露完整上下文内容的 Context Management observability。
 
 **最小但完整设计**
 
-- 当前版本必须真实实现请求前预算判断、触发决策、旧大型 Tool Result 的安全裁剪、必要的历史摘要、协议配对保护和失败回退；不能只统计长度或在超限后被动报错。
-- 保守字符估算、token 估算和固定阈值都是第一版候选方案；实施时根据实际模型接口、可获得的计量信息和失败案例选择最小可验证方案，阈值必须可测试且有明确依据，但不预先固化为长期策略。
-- 不建立复杂 Context 策略框架。
-- 只有一种压缩策略不足时，再根据失败案例增加层次。
-- 不提前设计多层 Context 策略，不等于可以省略本版从预算检测到压缩、继续调用及失败保护的完整闭环。
+V07 第一版的 Context Management baseline 由六个核心机制组成，并继承 V06 的 persistence/checkpoint 安全边界：
+
+```text
+Context Management V07
+├── Token Budget
+├── Tool Result Budget
+├── MicroCompact
+├── Full Compact
+├── PTL Recovery
+└── Metrics / Observability
+```
+
+每次实际模型请求统一经过以下流程：
+
+```text
+messages / active context
+         ↓
+Tool Result Budget
+         ↓
+MicroCompact
+         ↓
+Token Budget
+         ↓
+是否超过 trigger threshold？
+   ├── No → 正常调用 LLM
+   └── Yes
+         ↓
+     Full Compact
+         ↓
+Summary(old history)
++ Recent(raw context)
++ 当前任务继续执行所需的有效上下文
+         ↓
+     Re-estimate
+         ↓
+      LLM Call
+         ↓
+如实际发生 prompt_too_long
+         ↓
+     PTL Recovery
+```
+
+1. **Token Budget**
+   - Budget 针对即将发送给模型的实际请求上下文；system prompt 虽不属于普通 history compact 对象，仍必须计入 Context Budget。可计量范围还包括 active messages、tool schemas/definitions 及 API 请求中其他占用上下文的固定内容。
+   - 第一版可采用可验证的 token estimate、保守字符估算，或当前 API/模型可靠提供的计量方式。具体算法、模型 context limit、保留输出空间和数值阈值在实施阶段根据可获得信息确定，但估算结果与阈值判断必须确定性可测、依据明确且偏保守。
+   - 明确区分触发 Full Compact 的 `trigger threshold` 与 Compact 后期望达到的 `target watermark`。watermark 必须低于 threshold，预留 system prompt、模型输出、后续用户消息和 Tool Result 所需 headroom，避免刚 compact 完便再次触发。
+   - 未达到 trigger threshold 时不执行不必要的 Full Compact；每次 Full Compact 完成后必须重新估算，不能假定 summary 一定更小或一定已经满足预算。
+
+2. **Tool Result Budget**
+   - 单个 Tool Result 和同一当前 Tool batch 都有明确的 active payload 上限，防止它们在进入下一次模型请求前直接撑爆 context；此保护先于整体 Token Budget 的 Full Compact 决策发生。
+   - 超过上限且后续可能需要完整读取的 Tool Result，先将完整原始内容写入本地运行产物目录并确认可访问，再把 active context 中的 content/payload 替换为有限 preview、原始长度和 path/reference。完整结果不可因缩减而不可逆丢失。
+   - 不删除 `tool_result` block，不改变 `tool_use_id`，不破坏 Anthropic `assistant(tool_use)` 与 `user(tool_result)` 的 pairing。缩减对象只是 Tool Result 的 content/payload。
+   - 本版只解决 active context 的结果大小问题，不建立通用 Artifact Store、Tool Result Storage Framework 或新的数据仓储层。
+
+3. **MicroCompact**
+   - Full Compact 前优先处理模型已经看过、已经完成其直接用途、且随任务推进变旧的大型 Tool Result。必要时先持久化完整结果，再将其 active payload 替换为短 placeholder/reference。
+   - 最近产生且尚未被模型消费的 Tool Result、当前 Tool batch 的待消费结果，以及 Current Work 仍直接依赖其原始内容的结果，不得被过早缩减。
+   - 第一版使用最小、可解释、可测试的 old-result eligibility 判断；不建立 priority scoring、策略 Registry 或多层策略框架。
+   - Tool Result Budget 与 MicroCompact 在 Full Compact budget decision 前只执行 eligibility 检查和必要的低成本处理。没有 eligible 内容时必须 no-op，不重写 messages、不写入运行产物，也不产生 checkpoint；不能把流程图中的每次经过理解为每个 request 都实际发生持久化或 context 变更。
+   - MicroCompact 同样只缩减 payload，不删除协议 block；处理后若仍达到整体 trigger threshold，才进入 Full Compact。
+
+4. **Full Compact**
+   - Full Compact 不按消息数量简单删除最老消息，也不逐条任意切割 history。历史切分必须发生在合法的完整 API Round/message boundary 上，任何保留侧或被总结侧都不能留下 orphan `tool_use` 或 orphan `tool_result`。
+   - Compact 后的 active context 概念上固定为：
+
+```text
+Structured Summary(old history)
++ Recent(raw context)
++ 当前任务继续执行所需的有效状态/上下文
+```
+
+   - 最近仍直接参与 Current Work 的消息尽量保持 raw。保护对象是任务语义、当前有效用户约束、当前 Todo/Pending Tasks、Current Work 和已确认的重要事实，而不是所有旧历史原文永久驻留 active context。
+   - 第一版直接采用固定的结构化 Summary Prompt/Schema，不建立可配置 summary 策略：
+
+```text
+1. Primary Request and Intent
+2. Key Technical Concepts
+3. Files and Code Sections
+4. Errors and Fixes
+5. Problem Solving
+6. All User Messages
+7. Pending Tasks
+8. Current Work
+9. Optional Next Step
+```
+
+   - Summary 的验收目标是：另一个 coding agent 即使看不到已被 compact 的原始历史，也能忠实继续当前任务。它必须保留继续工作所需事实、当前有效要求与约束、重要 file path、function/class/symbol、command、error、decision，并明确区分 completed work、pending work 与 current work。
+   - Summary 不得编造，不得把未执行或未验证的修改、命令、测试写成已经成功。`All User Messages` 不要求逐字复制全部历史用户消息，而是保留仍影响后续任务的 intent、requirements、corrections、constraints 和 decisions；后续用户明确覆盖旧要求时，以当前有效语义为准。
+   - Summary LLM call 是 Full Compact 的内部调用，不再次递归进入普通 Full Compact pipeline。summary request 本身必须先确认能够在预算内安全发送；如果其输入无法满足预算，或该调用返回 `prompt_too_long`/等价 Context Overflow，则本次 Full Compact 失败，不对 summary call 递归 compact 或 retry，并保留原 active context 与 durable state。
+   - Summary 生成失败、结果校验失败或 compact 后重新估算不满足有效性要求时，不得用部分 summary 覆盖原 active messages 或 durable state。
+
+5. **PTL Recovery**
+   - 请求前预算是预防机制，不假定它能完全消除服务端 `prompt_too_long` 或等价 Context Overflow。该错误复用 V06 的 LLM/API error classification 边界，但其恢复动作属于 V07。
+   - PTL 不作为普通 transient error 执行 exponential retry。发生 PTL 时，允许一次严格有限的 reactive recovery compact/re-estimate/retry；具体一次 recovery 内仍需遵守 pairing、summary 与持久化安全边界。
+   - Recovery 属于当前 Agent Round，不新增逻辑 Round、不绕过或额外消耗 `MAX_ROUNDS`。若 recovery compact 失败、重新估算仍不安全，或 retry 再次 PTL，必须明确结束当前 Run，不能形成无限 `compact → retry` 循环。
+
+6. **Persistence、原子性与可恢复状态**
+   - 继承 V06 已验证的 messages persistence、checkpoint、resume、Session/Run/Round、interruption 和 pairing 语义，不重新设计 State Management。
+   - 完整 Tool Result 的产物写入成功且可重新访问后，才允许 durable active payload 指向该 reference。Full Compact 的 summary、合法性检查与重新估算全部成功后，才允许替换 durable active messages。
+   - 如果 Tool Result 缩减或 Full Compact 成功改变 durable active messages，必须通过现有 checkpoint 形成新的可恢复状态。compact、summary、产物 persistence 或 checkpoint 任一步失败，都必须保留上一份有效可恢复状态，不产生 half-compacted durable state。
+
+7. **Metrics / Observability**
+   - 复用现有 CLI 与 JSONL，至少记录：request 前 estimated context size 与 budget 状态、是否触发 Context Management、触发原因、使用的机制（Tool Result Budget、MicroCompact、Full Compact 或 PTL Recovery）、compact 前后估算大小、处理的 Tool Result 数量与规模、Full Compact 是否调用 summary、PTL recovery attempt 与最终结果。
+   - 日志只记录决策所需的计量、类型、状态和安全 reference；不记录完整 Tool Result、完整 transcript、完整 summary prompt、API key 或其他敏感内容，也不为 V07 建立新的 Metrics Framework。
+
+**关键不变量与边界**
+
+- 所有最终发送给 Anthropic Messages API 的 messages 都必须保持合法 `tool_use/tool_result` pairing；Tool Result Budget、MicroCompact、Full Compact 和 PTL Recovery 任一路径均不得产生 orphan block。
+- 当前任务语义、当前有效用户约束、Todo/Pending Work、Current Work 和继续执行所需的重要事实在 compact 后必须可用；不要求所有历史原文永久保留。
+- Tool Result active payload 可以缩减，但需要保留的完整输出必须先可靠持久化并可重新访问；持久化失败时继续使用上一份有效 context，不留下失效 reference。
+- Full Compact/summary 失败不能用部分生成结果覆盖原 messages 或 durable state；compact 成功改变 durable messages 后必须形成可恢复 checkpoint。
+- V07 不引入新的 `StateManager`、Repository、Event Sourcing、通用 Context Manager、Strategy Framework 或多层策略 Registry。
+
+**本版明确不做**
+
+- Snip 或单纯基于 message count 的 ceiling。
+- Context Collapse 或局部工作阶段摘要。
+- Session Memory。
+- Prompt Cache、Cache Editing 和 prompt-cache consistency。
+- Context priority scoring、多层策略 Registry、通用 Context Manager/Strategy Framework。
+- 通用 Artifact Store 或 Tool Result Storage Framework。
+
+完成基础 Context Budget 与 Compact 后，可以根据后续学习目标、Claude Code 的 Context Management 机制以及本项目后续设计，再决定是否继续加入 Snip、Context Collapse、Session Memory、Prompt Cache/Cache Editing 或其他更高级 Context Management 能力。当前 PLAN 不预先规定这些能力未来一定采用的实现，也不规定必须等第一版暴露某种生产问题后才能研究。
 
 **测试重点**
 
-- 阈值边界和无需压缩。
-- Tool Result 裁剪。
-- 历史摘要。
-- 工具调用与结果配对不被破坏。
-- 摘要失败时不覆盖原状态。
+- Budget 未达到 threshold 时不触发 Full Compact；达到边界时按确定性规则触发，并验证 `trigger threshold > target watermark` 及 compact 后 headroom。
+- 超大 Tool Result 完整持久化后，active context 只保留有限 preview、原始长度和可用 reference；完整内容仍可重新读取，持久化失败不产生失效 reference。
+- 已被模型消费且变旧的大型 Tool Result 可以 MicroCompact；最近产生、尚未消费、当前 batch 或 Current Work 直接依赖的结果不会被错误清理。
+- Tool Result Budget、MicroCompact、Full Compact 和 PTL Recovery 各路径都不删除协议 block、不改变 `tool_use_id`，最终 messages 无 orphan `tool_use/tool_result`。
+- Tool Result Budget/MicroCompact 等低成本处理后低于 threshold 时不调用 summary；处理后仍超预算时才触发 Full Compact。
+- Full Compact 只在合法完整 API Round/message boundary 切分，并保留 recent raw context。
+- 固定结构化 Summary 保留 task intent、当前用户约束、Todo/Pending Work、Current Work、重要文件/符号、commands、decisions 和 errors/fixes，正确区分已完成、待办、当前工作及未验证事项。
+- Summary 生成、结果校验、重新估算或 checkpoint 失败时，不覆盖原 messages 与 durable state，不产生 half-compacted state。
+- Compact 成功后通过 checkpoint 持久化；进程 restart/resume 能恢复 compact 后状态以及有效 Tool Result reference。
+- `prompt_too_long` 触发有限 PTL Recovery，保持同一逻辑 Round、不额外消耗 `MAX_ROUNDS`；持续失败明确结束，且不进入普通 exponential retry。
+- CLI/JSONL 可观察 budget 状态、触发原因、处理类型、compact 前后规模、Tool Result 处理量、summary 调用和 PTL recovery 结果，同时不记录完整 payload/transcript/prompt 或敏感信息。
+- V06 全部既有 regression tests 继续通过，确认 persistence、checkpoint、resume、Run/Round、interruption、error classification 和 pairing 语义未被破坏。
 
 **为什么需要 V08**
 
@@ -1017,21 +1145,27 @@ Compact 只服务当前 session；新 session 仍无法复用已验证的项目�
 
 **手动验收场景 / Demo Cases**
 
-1. **大型 Tool Result 触发压缩后继续任务**
-   - 用户输入示例：`生成或读取一个足够大的文本输出，然后告诉我开头标记和结尾标记；如果上下文接近预算，请先 compact 再回答。`
-   - 预期运行轨迹：工具产生大型结果 → Context Budget 接近阈值 → 裁剪旧 Tool Result 或 Compact → 后续 LLM 调用继续。
-   - 预期最终效果：CLI/JSONL 出现可观察的预算与 Compact 事件，Agent 没有因上下文超限崩溃，并保留完成任务所需标记。
-   - 验收重点：验证预算检测、压缩触发和任务连续性。
+1. **单次超大 Tool Result 被持久化和缩减后继续任务**
+   - 前置条件：准备一个首尾带有不同标记、大小足以超过 Tool Result active payload 上限的文本文件；用户输入示例：`读取这个大文件，告诉我开头标记和结尾标记，并说明完整结果保存在哪里。`
+   - 预期运行轨迹：Tool 返回超大结果 → 请求前 Tool Result Budget 将完整输出写入本地运行产物目录 → 原 `tool_result` block 保持不变但 payload 替换为有限 preview、原始长度和 path/reference → checkpoint → 后续 LLM 调用继续；是否还需 Full Compact 由重新估算决定。
+   - 预期最终效果：Agent 能继续完成任务；active context 不携带完整大结果，reference 可重新读取到完整内容，CLI/JSONL 可观察处理原因与缩减规模且不泄露完整内容。
+   - 验收重点：验证单结果保护、先持久化后替换、可访问性、pairing、原子 checkpoint 和任务连续性。
 2. **无需压缩的小任务**
    - 用户输入示例：`读取 README.md 第一行并返回。`
-   - 预期运行轨迹：Context Budget 在阈值内 → 不触发 Compact → 正常 Tool/LLM 流程。
+   - 预期运行轨迹：Tool Result Budget 无需处理 → MicroCompact 无 eligible 结果 → Context Budget 低于 trigger threshold → 不触发 Full Compact → 正常 Tool/LLM 流程。
    - 预期最终效果：快速得到正确标题，不发生不必要总结调用。
-   - 验收重点：验证 Compact 不是每轮固定动作，只在预算需要时发生。
-3. **长 session 压缩后保留 Tool 配对**
-   - 用户输入示例：连续提出多个读文件和命令输出问题，最后输入 `总结本 session 已完成的操作，并再次运行最后一个验证命令。`
-   - 预期运行轨迹：多轮历史增长 → Compact 旧历史，但 `tool_use/tool_result` 配对保持合法 → 最后命令仍能执行。
-   - 预期最终效果：模型请求不因消息协议错误失败，最终总结与实际工具轨迹基本一致。
-   - 验收重点：验证压缩后的 Anthropic 消息结构完整性。
+   - 验收重点：验证 request 前预算判断和 no-op 路径；Full Compact 不是每轮固定动作，threshold 与 watermark 不干扰正常小任务。
+3. **长 Session 经 MicroCompact、必要时 Full Compact 后继续工作**
+   - 用户输入示例：在同一 Session 中连续完成多个读文件、搜索和命令输出任务，建立一个未完成 Todo 并明确一项文件修改约束，最后输入 `继续当前 Todo，遵守我之前的文件约束，完成后运行最后约定的验证命令。`
+   - 预期运行轨迹：history 增长 → 已消费且变旧的大型 Tool Results 被 MicroCompact，最近/未消费/当前依赖结果保持 raw → 若重新估算仍达到 trigger threshold，则在完整 Round/message boundary 上生成固定结构 Summary → 保留 recent raw context、当前 Todo、有效约束和 Current Work → checkpoint → 重新估算后继续 LLM/Tool 流程。
+   - 预期最终效果：模型请求保持合法 pairing，不因 compact 丢失当前任务语义；Agent 能遵守文件约束、继续 Todo 并执行正确验证命令，restart 后仍可恢复 compact 后状态。
+   - 验收重点：验证 old-result eligibility、低成本优先、Full Compact 触发条件、固定 Summary 内容、合法切分、checkpoint/resume 和任务连续性。
+4. **接近 Context Limit 与 PTL Recovery**
+   - 前置条件：优先使用真实 Anthropic-compatible 服务能稳定复现的接近 context limit 场景；若服务端限制或计量差异使真实 PTL 无法稳定构造，则仅由 Fake Model 自动测试确定性注入一次及持续 `prompt_too_long`，不把模拟结果写成真实 Demo 通过。
+   - 用户输入示例：`继续处理当前长任务，并保留现有 Todo、约束和当前工作状态。`
+   - 预期运行轨迹：请求前已执行正常预算处理，但 API 仍返回 PTL → 在同一 Agent Round 进入一次受控 recovery compact/re-estimate/retry → 成功则继续；再次 PTL 或 recovery 失败则明确结束 current Run，不进入 exponential retry 或无限循环。
+   - 预期最终效果：若真实服务可稳定复现，CLI/JSONL 显示一次 PTL recovery attempt 及最终结果，Round 与 `MAX_ROUNDS` 语义不变；无法稳定复现时如实记录未执行真实 PTL Demo，并以 Fake Model 测试作为机制证据。
+   - 验收重点：验证 V06 error classification 衔接、有限 recovery、同 Round、失败终止和真实 Demo 证据不伪造。
 
 ### V08：简单 Memory
 
