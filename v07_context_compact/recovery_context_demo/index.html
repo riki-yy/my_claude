@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recovery | Habit Analytics</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">◆</span>
+        <div>
+          <h1>Recovery</h1>
+          <p class="tagline">Build habits. Track progress.</p>
+        </div>
+      </div>
+      <div class="stats-strip" id="stats-strip">
+        <div class="stat">
+          <span class="stat-value" id="stat-completed">0</span>
+          <span class="stat-label">Completed</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-total">0</span>
+          <span class="stat-label">Habits</span>
+        </div>
+        <div class="stat">
+          <span class="stat-value" id="stat-streak">0</span>
+          <span class="stat-label">Best streak</span>
+        </div>
+      </div>
+    </header>
+
+    <nav class="filters" id="filters" aria-label="Category filters">
+      <button class="filter-chip is-active" data-filter="all">All</button>
+    </nav>
+
+    <main class="habit-grid" id="habit-grid" aria-live="polite"></main>
+
+    <footer class="app-footer">
+      <p>Tap a card to toggle today's completion.</p>
+    </footer>
+  </div>
+
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

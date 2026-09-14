@@ -1,0 +1,319 @@
+exit_code=0
+"""V07: context budgeting and safe compaction on the V06 runtime."""
+
+from __future__ import annotations
+
+import json
+import copy
+import os
+import random
+import re
+import subprocess
+import sys
+import time
+import uuid
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+from typing import Any, Callable
+
+
+def _configure_line_editing(readline_module: Any) -> None:
+    """Enable the small set of libedit bindings used by the reference project."""
+    readline_module.parse_and_bind("set bind-tty-special-chars off")
+    readline_module.parse_and_bind("set input-meta on")
+    readline_module.parse_and_bind("set output-meta on")
+    readline_module.parse_and_bind("set convert-meta off")
+
+
+try:
+    import readline
+
+    _configure_line_editing(readline)
+except ImportError:
+    # Python builds without readline still run, but do not get interactive editing.
+    pass
+
+from anthropic import Anthropic
+from dotenv import load_dotenv
+
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+STATE_DIR = Path(__file__).resolve().parent / "state"
+ARTIFACT_DIR = Path(__file__).resolve().parent / "artifacts"
+WORKSPACE_ROOT = Path(__file__).resolve().parent
+SYSTEM = (
+    "You are a concise coding agent. Use the available tools to inspect and modify "
+    "the workspace and to run commands when the task requires it. Paths are relative "
+    "to the workspace. Complete the user's stated task directly and stop exploring once "
+    "you have enough evidence to answer. Do not inspect parent directories, Git state, "
+    "environment files, or runtime source unless the user explicitly asks. When the user "
+    "names files to create, create them directly instead of repeatedly listing directories. "
+    "Use glob, grep, and read_file for discovery; use write_file and edit_file for file "
+    "changes; reserve bash for commands and tests. Run "
+    "Python tests with 'python3.12 -m pytest', then give the final answer as soon as the "
+    "requested result is verified. If a tool result contains PERMISSION_DENIED, do not "
+    "try another tool or workaround unless the user explicitly requested an alternative; "
+    "explain the denial and finish the current task. For complex multi-step work, make "
+    "todo_write the first tool call before discovery or mutation, especially for tasks involving "
+    "multiple files or distinct implementation and verification stages, even when the user "
+    "does not explicitly ask for a plan or Todo. Todo items must describe actual deliverable "
+    "work, not meta-work such as planning or breaking down the task. Use moderate granularity: "
+    "each item should be an independently actionable and verifiable stage. For multi-file "
+    "deliverables, use separate items when files or components can progress independently, "
+    "but do not split simple operations into many tiny todos. Every "
+    "todo_write call must contain the complete current todo list, with at most one item "
+    "in_progress. Explicitly call todo_write again to mark completed work; tool results do "
+    "not update todos automatically. When a Todo maintenance reminder appears, review the "
+    "real progress and normally update the complete TodoList before another non-Todo tool "
+    "call when the progress has changed. Report what you changed and what you verified."
+)
+TOOLS = [
+    {
+        "name": "bash",
+        "description": "Run a shell command in the fixed workspace directory.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 30},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": "Read a UTF-8 text file inside the workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "Create or replace a UTF-8 text file inside the workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": "Replace one unique exact text occurrence in a workspace file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            "required": ["path", "old_text", "new_text"],
+        },
+    },
+    {
+        "name": "glob",
+        "description": "Find workspace paths matching a relative glob pattern.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"pattern": {"type": "string"}},
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "Search UTF-8 workspace files with a regular expression.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string", "default": "."},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "todo_write",
+        "description": (
+            "Create or replace the complete progress list for complex multi-step work, "
+            "especially multi-file implementation and verification tasks. Describe actual "
+            "deliverable stages at moderate, independently verifiable granularity; separate "
+            "multi-file components when their progress can differ, omit planning as a "
+            "meta-task, and avoid tiny operational steps. Send every current "
+            "item on every call. Use pending, in_progress, or completed, with at most one "
+            "in_progress item."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1},
+                            "content": {"type": "string", "minLength": 1},
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed"],
+                            },
+                        },
+                        "required": ["id", "content", "status"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["todos"],
+            "additionalProperties": False,
+        },
+    },
+]
+MAX_TOKENS = 8000
+MAX_ROUNDS = 20
+SUMMARY_LIMIT = 240
+CLI_PREVIEW_LIMIT = 80
+CLI_LIST_LIMIT = 5
+TOOL_NAME_COLOR = "\033[93m"
+ANSI_RESET = "\033[0m"
+SHELL_TIMEOUT_SECONDS = 10.0
+MAX_SHELL_TIMEOUT_SECONDS = 30.0
+TOOL_OUTPUT_LIMIT = 12_000
+MAX_SEARCH_RESULTS = 200
+MAX_TODOS = 20
+TODO_STATUSES = ("pending", "in_progress", "completed")
+TODO_REMINDER_ROUNDS = 3
+TODO_MAINTENANCE_REMINDER = "<reminder>Update your todos.</reminder>"
+TODO_SYMBOLS = {"pending": "○", "in_progress": "›", "completed": "✓"}
+STATE_SCHEMA_VERSION = 1
+RUN_STATUSES = ("running", "completed", "failed", "interrupted")
+INTERRUPTION_PHASES = (
+    "llm_call",
+    "permission_wait",
+    "tool_execution",
+    "tool_result_recording",
+)
+MAX_RETRIES = 4
+BASE_DELAY = 1.0
+MAX_DELAY = 16.0
+JITTER_RATIO = 0.25
+
+# Deterministic, deliberately conservative first-version budget.  JSON request
+# characters are divided by three (rather than the usual ~4 chars/token).
+CONTEXT_TRIGGER_TOKENS = 16_000
+CONTEXT_TARGET_TOKENS = 8_000
+SUMMARY_INPUT_LIMIT = 96_000
+SINGLE_TOOL_RESULT_CHARS = 16_000
+TOOL_RESULT_BATCH_CHARS = 32_000
+TOOL_RESULT_PREVIEW_CHARS = 2_000
+MICROCOMPACT_MIN_CHARS = 4_000
+RECENT_RAW_ROUNDS = 2
+SUMMARY_MAX_TOKENS = 4_000
+
+SUMMARY_SYSTEM = """You compact coding-agent history. Return exactly these nine markdown sections:
+1. Primary Request and Intent
+2. Key Technical Concepts
+3. Files and Code Sections
+4. Errors and Fixes
+5. Problem Solving
+6. All User Messages
+7. Pending Tasks
+8. Current Work
+9. Optional Next Step
+Preserve current requirements, constraints, paths, symbols, commands, decisions and verified facts. Clearly distinguish completed, pending, current and unverified work. Never invent execution or success."""
+
+TODO_STATE: list[dict[str, str]] = []
+
+# Configured by configure_model() for the real CLI. Tests replace `client`
+# directly, at the same client.messages.create surface used in production.
+client: Any = None
+MODEL: str | None = None
+
+HOOK_EVENTS = ("PreToolUse", "PostToolUse")
+HOOKS: dict[str, list[Callable[[dict[str, Any]], None]]] = {
+    event: [] for event in HOOK_EVENTS
+}
+
+
+def register_hook(event: str, callback: Callable[[dict[str, Any]], None]) -> None:
+    """Append one callback to a supported tool lifecycle event."""
+    if event not in HOOKS:
+        raise ValueError(f"UNKNOWN_HOOK_EVENT: {event}")
+    if not callable(callback):
+        raise TypeError("hook callback must be callable")
+    HOOKS[event].append(callback)
+
+
+def trigger_hooks(event: str, context: dict[str, Any]) -> None:
+    """Call an event's callbacks in registration order with one shared context."""
+    if event not in HOOKS:
+        raise ValueError(f"UNKNOWN_HOOK_EVENT: {event}")
+    for callback in tuple(HOOKS[event]):
+        callback(context)
+
+
+def configure_model() -> None:
+    """Load the shared root .env and create the reference-style SDK client."""
+    global client, MODEL
+
+    env_path = ROOT_DIR / ".env"
+    if not env_path.exists():
+        raise RuntimeError(
+            f"CONFIG_ERROR: missing {env_path}. Copy .env.example to .env first."
+        )
+    load_dotenv(env_path, override=True)
+    missing = [name for name in ("ANTHROPIC_API_KEY", "MODEL_ID") if not os.getenv(name)]
+    if missing:
+        raise RuntimeError(f"CONFIG_ERROR: missing environment variable(s): {', '.join(missing)}")
+    if os.getenv("ANTHROPIC_BASE_URL"):
+        os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
+
+    client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+    MODEL = os.environ["MODEL_ID"]
+
+
+def _value(obj: Any, name: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+class StateLoadError(RuntimeError):
+    """The requested persisted session cannot be restored safely."""
+
+
+class StateSaveError(RuntimeError):
+    """A checkpoint could not be committed atomically."""
+
+
+def _jsonable(value: Any) -> Any:
+    """Convert SDK response blocks into the plain JSON values used on disk."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _jsonable(model_dump(mode="json"))
+    if hasattr(value, "__dict__"):
+        return _jsonable(vars(value))
+    raise TypeError(f"value is not JSON serializable: {type(value).__name__}")
+
+
+def new_runtime_state(session_id: str) -> dict[str, Any]:
+    return {
+        "schema_version": STATE_SCHEMA_VERSION,
+        "session_id": session_id,
+        "messages": [],
+        "todos": [],
+        "current_run": None,
+        "interruption_info": None,
+        "updated_at": datetime.now(UTC).isofor
+[output truncated from 17650 characters]

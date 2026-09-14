@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>个人读书追踪</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>📚 个人读书追踪</h1>
+      <p class="subtitle">记录你的阅读旅程</p>
+    </header>
+
+    <!-- 统计区域 -->
+    <section class="stats" aria-label="阅读统计">
+      <div class="stat-card">
+        <span class="stat-number" id="stat-total">0</span>
+        <span class="stat-label">总数</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="stat-reading">0</span>
+        <span class="stat-label">在读</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="stat-completed">0</span>
+        <span class="stat-label">已读</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-number" id="stat-wishlist">0</span>
+        <span class="stat-label">想读</span>
+      </div>
+    </section>
+
+    <!-- 添加书籍表单 -->
+    <section class="add-book" aria-label="添加书籍">
+      <h2>添加书籍</h2>
+      <form id="add-book-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label for="book-title">书名 <span class="required">*</span></label>
+            <input type="text" id="book-title" placeholder="输入书名" required>
+          </div>
+          <div class="form-group">
+            <label for="book-author">作者</label>
+            <input type="text" id="book-author" placeholder="输入作者">
+          </div>
+          <div class="form-group">
+            <label for="book-status">阅读状态</label>
+            <select id="book-status">
+              <option value="reading">在读</option>
+              <option value="completed">已读</option>
+              <option value="wishlist">想读</option>
+            </select>
+          </div>
+          <button type="submit" class="btn btn-add">添加书籍</button>
+        </div>
+      </form>
+    </section>
+
+    <!-- 筛选区域 -->
+    <section class="filter" aria-label="筛选书籍">
+      <div class="filter-tabs" role="group" aria-label="按状态筛选">
+        <button type="button" class="filter-btn active" data-filter="all" aria-pressed="true">全部</button>
+        <button type="button" class="filter-btn" data-filter="reading" aria-pressed="false">在读</button>
+        <button type="button" class="filter-btn" data-filter="completed" aria-pressed="false">已读</button>
+        <button type="button" class="filter-btn" data-filter="wishlist" aria-pressed="false">想读</button>
+      </div>
+    </section>
+
+    <!-- 书籍列表 -->
+    <section class="book-list" aria-label="书籍列表">
+      <h2>我的书籍 <span class="book-count" id="book-count">0</span></h2>
+      <ul id="book-list" class="book-items"></ul>
+      <p id="empty-message" class="empty-message">暂无书籍，快去添加你的第一本书吧！</p>
+    </section>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Project status dashboard for the NAG demo portfolio.">
+  <title>Project Status Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="dashboard-header">
+    <div class="header-inner">
+      <h1>Project Status Dashboard</h1>
+      <p class="subtitle">A live overview of the NAG demo portfolio</p>
+    </div>
+  </header>
+
+  <main id="app" class="app">
+    <section id="summary" class="summary" aria-live="polite"></section>
+
+    <section class="toolbar" aria-label="Filters">
+      <div class="filter-group" role="group" aria-label="Filter by status">
+        <button type="button" class="filter-chip is-active" data-status="all">All</button>
+        <button type="button" class="filter-chip" data-status="in-progress">In Progress</button>
+        <button type="button" class="filter-chip" data-status="pending">Pending</button>
+        <button type="button" class="filter-chip" data-status="completed">Completed</button>
+        <button type="button" class="filter-chip" data-status="on-hold">On Hold</button>
+      </div>
+      <div class="search-group">
+        <label for="search" class="visually-hidden">Search projects</label>
+        <input type="search" id="search" class="search-input" placeholder="Search projects…">
+      </div>
+    </section>
+
+    <section id="cards" class="cards" aria-label="Projects" aria-live="polite"></section>
+    <p id="empty-state" class="empty-state" hidden>No projects match your filters.</p>
+  </main>
+
+  <footer class="dashboard-footer">
+    <p>Generated for the NAG demo · <span id="year"></span></p>
+  </footer>
+
+  <script src="data.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

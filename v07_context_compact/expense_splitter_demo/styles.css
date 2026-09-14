@@ -1,0 +1,336 @@
+:root {
+    --primary: #6366f1;
+    --primary-dark: #4f46e5;
+    --danger: #ef4444;
+    --success: #10b981;
+    --bg: #f1f5f9;
+    --card-bg: #ffffff;
+    --text: #1e293b;
+    --muted: #64748b;
+    --border: #e2e8f0;
+    --radius: 12px;
+    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.5;
+}
+
+.app {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 1.5rem 1rem 2.5rem;
+}
+
+header {
+    text-align: center;
+    padding: 1rem 0 1.5rem;
+}
+
+header h1 {
+    font-size: 2rem;
+    color: var(--primary-dark);
+}
+
+.tagline {
+    color: var(--muted);
+    margin-top: 0.25rem;
+}
+
+main {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+}
+
+.card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 1.25rem;
+}
+
+.card h2 {
+    font-size: 1.1rem;
+    margin-bottom: 1rem;
+    color: var(--text);
+}
+
+/* Forms */
+.inline-form {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.inline-form input {
+    flex: 1;
+}
+
+.expense-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+input,
+select {
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 1rem;
+    background: #fff;
+    color: var(--text);
+    width: 100%;
+}
+
+input:focus,
+select:focus {
+    outline: 2px solid var(--primary);
+    outline-offset: 1px;
+    border-color: var(--primary);
+}
+
+.split-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.split-label {
+    font-size: 0.9rem;
+    color: var(--muted);
+}
+
+.checkbox-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.checkbox-group label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    user-select: none;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.checkbox-group label:hover {
+    border-color: var(--primary);
+}
+
+.checkbox-group input[type="checkbox"] {
+    width: auto;
+    accent-color: var(--primary);
+}
+
+.checkbox-group label.checked {
+    background: #eef2ff;
+    border-color: var(--primary);
+    color: var(--primary-dark);
+}
+
+/* Buttons */
+.btn {
+    padding: 0.6rem 1rem;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.05s;
+    white-space: nowrap;
+}
+
+.btn:active {
+    transform: scale(0.97);
+}
+
+.btn-primary {
+    background: var(--primary);
+    color: #fff;
+}
+
+.btn-primary:hover {
+    background: var(--primary-dark);
+}
+
+.btn-danger {
+    background: var(--danger);
+    color: #fff;
+    align-self: flex-start;
+}
+
+.btn-danger:hover {
+    background: #dc2626;
+}
+
+.btn-sm {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.85rem;
+    background: transparent;
+    color: var(--muted);
+}
+
+.btn-sm:hover {
+    background: #f1f5f9;
+    color: var(--danger);
+}
+
+/* People list */
+.people-list {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.people-list li {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.35rem 0.4rem 0.35rem 0.9rem;
+    font-size: 0.95rem;
+}
+
+.people-list .remove {
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 1rem;
+    padding: 0 0.4rem;
+    border-radius: 50%;
+}
+
+.people-list .remove:hover {
+    color: var(--danger);
+}
+
+/* Summary */
+#summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 0.75rem;
+}
+
+.summary-item {
+    background: #f8fafc;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.75rem;
+    text-align: center;
+}
+
+.summary-item .name {
+    font-weight: 600;
+    font-size: 0.95rem;
+    overflow-wrap: anywhere;
+}
+
+.summary-item .amount {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin-top: 0.25rem;
+}
+
+.summary-item .share {
+    font-size: 0.8rem;
+    color: var(--muted);
+    margin-top: 0.1rem;
+}
+
+.summary-item.positive .amount {
+    color: var(--success);
+}
+
+.summary-item.negative .amount {
+    color: var(--danger);
+}
+
+.summary-item.zero .amount {
+    color: var(--muted);
+}
+
+.empty-msg {
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* Settlements */
+.settlements-list {
+    list-style: none;
+}
+
+.settlements-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.6rem 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.95rem;
+    flex-wrap: wrap;
+}
+
+.settlements-list li:last-child {
+    border-bottom: none;
+}
+
+.settlements-list .owes {
+    color: var(--muted);
+}
+
+.settlements-list .amount {
+    font-weight: 700;
+    color: var(--primary-dark);
+    white-space: nowrap;
+}
+
+footer {
+    text-align: center;
+    margin-top: 2rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+@media (max-width: 480px) {
+    .app {
+        padding: 1rem 0.75rem 2rem;
+    }
+
+    header h1 {
+        font-size: 1.6rem;
+    }
+
+    .inline-form {
+        flex-direction: column;
+    }
+
+    .inline-form .btn {
+        width: 100%;
+    }
+
+    .card {
+        padding: 1rem;
+    }
+}

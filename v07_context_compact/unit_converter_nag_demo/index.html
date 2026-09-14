@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Unit Converter</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="converter">
+    <h1>Unit Converter</h1>
+
+    <form id="converter-form" novalidate>
+      <fieldset class="category">
+        <legend>Choose a category</legend>
+        <label>
+          <input type="radio" name="category" value="length" checked>
+          Length
+        </label>
+        <label>
+          <input type="radio" name="category" value="temperature">
+          Temperature
+        </label>
+      </fieldset>
+
+      <div class="controls">
+        <label class="field">
+          <span class="field-label">From</span>
+          <input type="number" id="input-value" step="any" autocomplete="off">
+          <select id="from-unit" aria-label="From unit"></select>
+        </label>
+
+        <button type="button" id="swap" class="swap" aria-label="Swap units">&#8646;</button>
+
+        <label class="field">
+          <span class="field-label">To</span>
+          <input type="text" id="output-value" readonly aria-label="Converted value">
+          <select id="to-unit" aria-label="To unit"></select>
+        </label>
+      </div>
+
+      <p class="error" id="error" role="alert" hidden></p>
+
+      <button type="submit" class="convert-btn">Convert</button>
+    </form>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>

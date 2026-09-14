@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Personal Reading Tracker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="app-header">
+      <h1>📚 Personal Reading Tracker</h1>
+      <p class="subtitle">Keep track of the books you've read, are reading, or want to read.</p>
+    </header>
+
+    <section class="summary" aria-label="Reading summary">
+      <div class="summary-card">
+        <span class="summary-label">To Read</span>
+        <span class="summary-value" id="count-to-read">0</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Reading</span>
+        <span class="summary-value" id="count-reading">0</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Completed</span>
+        <span class="summary-value" id="count-completed">0</span>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">Total</span>
+        <span class="summary-value" id="count-total">0</span>
+      </div>
+    </section>
+
+    <section class="add-book" aria-label="Add a book">
+      <form id="book-form">
+        <div class="field">
+          <label for="title-input">Title</label>
+          <input type="text" id="title-input" name="title" placeholder="e.g. The Great Gatsby" autocomplete="off" required>
+        </div>
+        <div class="field">
+          <label for="author-input">Author</label>
+          <input type="text" id="author-input" name="author" placeholder="e.g. F. Scott Fitzgerald" autocomplete="off" required>
+        </div>
+        <div class="field">
+          <label for="status-input">Reading Status</label>
+          <select id="status-input" name="status">
+            <option value="to-read">To Read</option>
+            <option value="reading">Reading</option>
+            <option value="completed">Completed</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary">Add Book</button>
+      </form>
+    </section>
+
+    <section class="library" aria-label="Your library">
+      <div class="toolbar">
+        <h2>My Library</h2>
+        <div class="filters" role="group" aria-label="Filter books by status">
+          <button type="button" class="filter-btn active" data-filter="all">All</button>
+          <button type="button" class="filter-btn" data-filter="to-read">To Read</button>
+          <button type="button" class="filter-btn" data-filter="reading">Reading</button>
+          <button type="button" class="filter-btn" data-filter="completed">Completed</button>
+        </div>
+      </div>
+      <p id="empty-message" class="empty" hidden>No books yet. Add your first book above!</p>
+      <ul id="book-list" class="book-list"></ul>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
