@@ -1,0 +1,151 @@
+exit_code=0
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "todos": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1},
+                            "content": {"type": "string", "minLength": 1},
+                            "status": {
+                                "type": "string",
+                                "enum": ["pending", "in_progress", "completed"],
+                            },
+                        },
+                        "required": ["id", "content", "status"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["todos"],
+            "additionalProperties": False,
+        },
+    },
+]
+MAX_TOKENS = 8000
+MAX_ROUNDS = 20
+SUMMARY_LIMIT = 240
+CLI_PREVIEW_LIMIT = 80
+CLI_LIST_LIMIT = 5
+TOOL_NAME_COLOR = "\033[93m"
+ANSI_RESET = "\033[0m"
+SHELL_TIMEOUT_SECONDS = 10.0
+MAX_SHELL_TIMEOUT_SECONDS = 30.0
+TOOL_OUTPUT_LIMIT = 12_000
+MAX_SEARCH_RESULTS = 200
+MAX_TODOS = 20
+TODO_STATUSES = ("pending", "in_progress", "completed")
+TODO_REMINDER_ROUNDS = 3
+TODO_MAINTENANCE_REMINDER = "<reminder>Update your todos.</reminder>"
+TODO_SYMBOLS = {"pending": "○", "in_progress": "›", "completed": "✓"}
+STATE_SCHEMA_VERSION = 1
+RUN_STATUSES = ("running", "completed", "failed", "interrupted")
+INTERRUPTION_PHASES = (
+    "llm_call",
+    "permission_wait",
+    "tool_execution",
+    "tool_result_recording",
+)
+MAX_RETRIES = 4
+BASE_DELAY = 1.0
+MAX_DELAY = 16.0
+JITTER_RATIO = 0.25
+
+# Deterministic, deliberately conservative first-version budget.  JSON request
+# characters are divided by three (rather than the usual ~4 chars/token).
+CONTEXT_TRIGGER_TOKENS = 16_000
+CONTEXT_TARGET_TOKENS = 8_000
+SUMMARY_INPUT_LIMIT = 96_000
+SINGLE_TOOL_RESULT_CHARS = 16_000
+TOOL_RESULT_BATCH_CHARS = 32_000
+TOOL_RESULT_PREVIEW_CHARS = 2_000
+MICROCOMPACT_KEEP_RECENT_RESULTS = 3
+MICROCOMPACT_TARGET_RATIO = 0.8
+RECENT_RAW_ROUNDS = 2
+SUMMARY_MAX_TOKENS = 4_000
+
+SUMMARY_SYSTEM = """You compact coding-agent history. Return exactly these nine markdown sections:
+1. Primary Request and Intent
+2. Key Technical Concepts
+3. Files and Code Sections
+4. Errors and Fixes
+5. Problem Solving
+6. All User Messages
+7. Pending Tasks
+8. Current Work
+9. Optional Next Step
+Preserve current requirements, constraints, paths, symbols, commands, decisions and verified facts. Clearly distinguish completed, pending, current and unverified work. Never invent execution or success."""
+
+TODO_STATE: list[dict[str, str]] = []
+
+# Configured by configure_model() for the real CLI. Tests replace `client`
+# directly, at the same client.messages.create surface used in production.
+client: Any = None
+MODEL: str | None = None
+
+HOOK_EVENTS = ("PreToolUse", "PostToolUse")
+HOOKS: dict[str, list[Callable[[dict[str, Any]], None]]] = {
+    event: [] for event in HOOK_EVENTS
+}
+
+
+def register_hook(event: str, callback: Callable[[dict[str, Any]], None]) -> None:
+    """Append one callback to a supported tool lifecycle event."""
+    if event not in HOOKS:
+        raise ValueError(f"UNKNOWN_HOOK_EVENT: {event}")
+    if not callable(callback):
+        raise TypeError("hook callback must be callable")
+    HOOKS[event].append(callback)
+
+
+def trigger_hooks(event: str, context: dict[str, Any]) -> None:
+    """Call an event's callbacks in registration order with one shared context."""
+    if event not in HOOKS:
+        raise ValueError(f"UNKNOWN_HOOK_EVENT: {event}")
+    for callback in tuple(HOOKS[event]):
+        callback(context)
+
+
+def configure_model() -> None:
+    """Load the shared root .env and create the reference-style SDK client."""
+    global client, MODEL
+
+    env_path = ROOT_DIR / ".env"
+    if not env_path.exists():
+        raise RuntimeError(
+            f"CONFIG_ERROR: missing {env_path}. Copy .env.example to .env first."
+        )
+    load_dotenv(env_path, override=True)
+    missing = [name for name in ("ANTHROPIC_API_KEY", "MODEL_ID") if not os.getenv(name)]
+    if missing:
+        raise RuntimeError(f"CONFIG_ERROR: missing environment variable(s): {', '.join(missing)}")
+    if os.getenv("ANTHROPIC_BASE_URL"):
+        os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
+
+    client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+    MODEL = os.environ["MODEL_ID"]
+
+
+def _value(obj: Any, name: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+class StateLoadError(RuntimeError):
+    """The requested persisted session cannot be restored safely."""
+
+
+class StateSaveError(RuntimeError):
+    """A checkpoint could not be committed atomically."""
+
+
+def _jsonable(value: Any) -> Any:
+    """Convert SDK response blocks into the plain JSON values used on disk."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}

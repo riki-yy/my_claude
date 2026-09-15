@@ -1,0 +1,51 @@
+exit_code=0
+
+
+def trigger_hooks(event: str, context: dict[str, Any]) -> None:
+    """Call an event's callbacks in registration order with one shared context."""
+    if event not in HOOKS:
+        raise ValueError(f"UNKNOWN_HOOK_EVENT: {event}")
+    for callback in tuple(HOOKS[event]):
+        callback(context)
+
+
+def configure_model() -> None:
+    """Load the shared root .env and create the reference-style SDK client."""
+    global client, MODEL
+
+    env_path = ROOT_DIR / ".env"
+    if not env_path.exists():
+        raise RuntimeError(
+            f"CONFIG_ERROR: missing {env_path}. Copy .env.example to .env first."
+        )
+    load_dotenv(env_path, override=True)
+    missing = [name for name in ("ANTHROPIC_API_KEY", "MODEL_ID") if not os.getenv(name)]
+    if missing:
+        raise RuntimeError(f"CONFIG_ERROR: missing environment variable(s): {', '.join(missing)}")
+    if os.getenv("ANTHROPIC_BASE_URL"):
+        os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
+
+    client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+    MODEL = os.environ["MODEL_ID"]
+
+
+def _value(obj: Any, name: str, default: Any = None) -> Any:
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
+
+
+class StateLoadError(RuntimeError):
+    """The requested persisted session cannot be restored safely."""
+
+
+class StateSaveError(RuntimeError):
+    """A checkpoint could not be committed atomically."""
+
+
+def _jsonable(value: Any) -> Any:
+    """Convert SDK response blocks into the plain JSON values used on disk."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}

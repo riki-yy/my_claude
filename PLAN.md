@@ -992,7 +992,7 @@ V06 使 Session/Run 可以可靠延续，但不会控制持续增长的 messages
 
 - 在每次 `client.messages.create()` 前，对实际将发送的 system prompt、messages、tool definitions 和其他请求内容统一进行 Context Budget 估算与决策，而不是以 `len(messages)` 代替上下文大小。
 - 用 Tool Result Budget 防止单个或当前 batch 的超大结果直接撑爆 active context；完整结果可靠持久化后，只在 active context 保留有限 preview、原始长度和可重新读取的 path/reference。
-- 在 Full Compact 前，用 MicroCompact 优先缩减模型已经消费、且随任务推进变旧的大型 Tool Result payload；保留协议 block 与重新访问完整结果的能力。
+- 当整体 Context 达到 trigger threshold 时，在 Full Compact 前用 pressure-driven MicroCompact 优先缩减较早且已经被模型消费的 Tool Result payload；保留协议 block 与重新访问完整结果的能力。
 - 只有低成本处理后 active context 仍达到 trigger threshold，才在合法边界上执行 Full Compact，并压缩到低于 threshold 的 target watermark，为后续工作保留 headroom。
 - Full Compact 以结构化 Summary 替换较旧历史，同时保留 recent raw context 和继续当前任务所需的有效状态/上下文。
 - 与 V06 的 LLM/API error classification 衔接：真实 `prompt_too_long` 或等价 Context Overflow 允许在同一 Agent Round 内进行一次受控的 PTL Recovery compact/retry，持续失败时明确结束。
@@ -1019,11 +1019,17 @@ messages / active context
          ↓
 Tool Result Budget
          ↓
-MicroCompact
-         ↓
 Token Budget
          ↓
 是否超过 trigger threshold？
+   ├── No → 正常调用 LLM
+   └── Yes
+         ↓
+     MicroCompact
+         ↓
+     Re-estimate
+         ↓
+是否仍达到 trigger threshold？
    ├── No → 正常调用 LLM
    └── Yes
          ↓
@@ -1055,11 +1061,13 @@ Summary(old history)
    - 本版只解决 active context 的结果大小问题，不建立通用 Artifact Store、Tool Result Storage Framework 或新的数据仓储层。
 
 3. **MicroCompact**
-   - Full Compact 前优先处理模型已经看过、已经完成其直接用途、且随任务推进变旧的大型 Tool Result。必要时先持久化完整结果，再将其 active payload 替换为短 placeholder/reference。
-   - 最近产生且尚未被模型消费的 Tool Result、当前 Tool batch 的待消费结果，以及 Current Work 仍直接依赖其原始内容的结果，不得被过早缩减。
-   - 第一版使用最小、可解释、可测试的 old-result eligibility 判断；不建立 priority scoring、策略 Registry 或多层策略框架。
-   - Tool Result Budget 与 MicroCompact 在 Full Compact budget decision 前只执行 eligibility 检查和必要的低成本处理。没有 eligible 内容时必须 no-op，不重写 messages、不写入运行产物，也不产生 checkpoint；不能把流程图中的每次经过理解为每个 request 都实际发生持久化或 context 变更。
-   - MicroCompact 同样只缩减 payload，不删除协议 block；处理后若仍达到整体 trigger threshold，才进入 Full Compact。
+   - MicroCompact 是 pressure-driven 机制：Tool Result Budget 完成并估算整体 Context 后，只有达到 `CONTEXT_TRIGGER_TOKENS` 才尝试 MicroCompact；低于 trigger 时不扫描或改写旧 Tool Result。
+   - 第一版定义内部策略常量 `MICROCOMPACT_KEEP_RECENT_RESULTS = 3`，默认保留最近 3 条已经被模型消费的 Tool Result 原文。该保护窗口按已消费 Tool Result 的条数计算，不对外配置；最近产生且尚未被模型消费的结果和当前 Tool batch 的待消费结果不属于可处理对象。
+   - 从保护窗口之前最老的 Tool Result 开始，按 `oldest → newest` 逐条处理。`MICROCOMPACT_MIN_CHARS` 不再作为 eligibility 条件；当前实现中该常量没有其他必要用途，实施时删除该常量及相关长度判断。保护窗口之外的已消费 Tool Result 无论当前 payload 长度均可按顺序 MicroCompact。
+   - 若 Tool Result 已经由 Tool Result Budget 完整持久化，则复用其现有 artifact path，不重复写入；否则必须先完整持久化并确认可访问。随后仅将 active `tool_result.content` 替换为带 path 的短占位符，例如 `[Earlier tool result saved at {saved_path}]`。
+   - 第一版定义内部策略常量 `MICROCOMPACT_TARGET_RATIO = 0.8`，不对外配置。每处理一条 Tool Result 后都重新估算 Context；一旦低于 `CONTEXT_TRIGGER_TOKENS * MICROCOMPACT_TARGET_RATIO` 即停止。当前 trigger 为 16K，因此 MicroCompact 目标约为 12.8K。
+   - 如果保护窗口之前没有可处理结果，MicroCompact 必须 no-op，不重写 messages、不写入运行产物，也不产生 checkpoint。如果可处理结果全部处理后 Context 仍达到 Full Compact trigger，则进入现有 Full Compact。
+   - MicroCompact 只缩减 payload，不删除 `tool_result` block、不改变 `tool_use_id`，并保持 Anthropic `tool_use/tool_result` pairing；不建立 priority scoring、策略 Registry 或多层策略框架。
 
 4. **Full Compact**
    - Full Compact 不按消息数量简单删除最老消息，也不逐条任意切割 history。历史切分必须发生在合法的完整 API Round/message boundary 上，任何保留侧或被总结侧都不能留下 orphan `tool_use` 或 orphan `tool_result`。
@@ -1128,9 +1136,10 @@ Structured Summary(old history)
 
 - Budget 未达到 threshold 时不触发 Full Compact；达到边界时按确定性规则触发，并验证 `trigger threshold > target watermark` 及 compact 后 headroom。
 - 超大 Tool Result 完整持久化后，active context 只保留有限 preview、原始长度和可用 reference；完整内容仍可重新读取，持久化失败不产生失效 reference。
-- 已被模型消费且变旧的大型 Tool Result 可以 MicroCompact；最近产生、尚未消费、当前 batch 或 Current Work 直接依赖的结果不会被错误清理。
+- 整体 Context 低于 trigger 时不执行 MicroCompact；达到 trigger 后，保护最近 3 条已消费结果，并从保护窗口之前按 `oldest → newest` 逐条处理，未消费结果和当前 batch 不会被错误缩减。
 - Tool Result Budget、MicroCompact、Full Compact 和 PTL Recovery 各路径都不删除协议 block、不改变 `tool_use_id`，最终 messages 无 orphan `tool_use/tool_result`。
-- Tool Result Budget/MicroCompact 等低成本处理后低于 threshold 时不调用 summary；处理后仍超预算时才触发 Full Compact。
+- Tool Result Budget 后低于 threshold 时不执行 MicroCompact 或 Full Compact；达到 threshold 时先 MicroCompact，每处理一条后重新估算并在低于 0.8 target ratio 时停止，全部可处理结果缩减后仍达到 threshold 才触发 Full Compact。
+- MicroCompact 对已经由 Tool Result Budget 持久化的结果复用原 artifact path；未持久化的结果先可靠落盘。两种路径都将 active content 替换为短 path placeholder，并验证失败时不产生失效 reference 或 half-compacted durable state。
 - Full Compact 只在合法完整 API Round/message boundary 切分，并保留 recent raw context。
 - 固定结构化 Summary 保留 task intent、当前用户约束、Todo/Pending Work、Current Work、重要文件/符号、commands、decisions 和 errors/fixes，正确区分已完成、待办、当前工作及未验证事项。
 - Summary 生成、结果校验、重新估算或 checkpoint 失败时，不覆盖原 messages 与 durable state，不产生 half-compacted state。
@@ -1152,14 +1161,14 @@ Compact 只服务当前 session；新 session 仍无法复用已验证的项目�
    - 验收重点：验证单结果保护、先持久化后替换、可访问性、pairing、原子 checkpoint 和任务连续性。
 2. **无需压缩的小任务**
    - 用户输入示例：`读取 README.md 第一行并返回。`
-   - 预期运行轨迹：Tool Result Budget 无需处理 → MicroCompact 无 eligible 结果 → Context Budget 低于 trigger threshold → 不触发 Full Compact → 正常 Tool/LLM 流程。
+   - 预期运行轨迹：Tool Result Budget 无需处理 → Context Budget 低于 trigger threshold → 不触发 MicroCompact 或 Full Compact → 正常 Tool/LLM 流程。
    - 预期最终效果：快速得到正确标题，不发生不必要总结调用。
    - 验收重点：验证 request 前预算判断和 no-op 路径；Full Compact 不是每轮固定动作，threshold 与 watermark 不干扰正常小任务。
 3. **长 Session 经 MicroCompact、必要时 Full Compact 后继续工作**
    - 用户输入示例：在同一 Session 中连续完成多个读文件、搜索和命令输出任务，建立一个未完成 Todo 并明确一项文件修改约束，最后输入 `继续当前 Todo，遵守我之前的文件约束，完成后运行最后约定的验证命令。`
-   - 预期运行轨迹：history 增长 → 已消费且变旧的大型 Tool Results 被 MicroCompact，最近/未消费/当前依赖结果保持 raw → 若重新估算仍达到 trigger threshold，则在完整 Round/message boundary 上生成固定结构 Summary → 保留 recent raw context、当前 Todo、有效约束和 Current Work → checkpoint → 重新估算后继续 LLM/Tool 流程。
+   - 预期运行轨迹：history 增长至 trigger → 保留最近 3 条已消费 Tool Results，从更早结果开始按 oldest → newest MicroCompact，并在每条后重新估算 → 低于 0.8 target ratio 时停止；若全部可处理结果缩减后仍达到 trigger threshold，则在完整 Round/message boundary 上生成固定结构 Summary → 保留 recent raw context、当前 Todo、有效约束和 Current Work → checkpoint → 重新估算后继续 LLM/Tool 流程。
    - 预期最终效果：模型请求保持合法 pairing，不因 compact 丢失当前任务语义；Agent 能遵守文件约束、继续 Todo 并执行正确验证命令，restart 后仍可恢复 compact 后状态。
-   - 验收重点：验证 old-result eligibility、低成本优先、Full Compact 触发条件、固定 Summary 内容、合法切分、checkpoint/resume 和任务连续性。
+   - 验收重点：验证 pressure trigger、最近 3 条保护窗口、oldest → newest 顺序、artifact path 复用、0.8 停止目标、Full Compact 触发条件、固定 Summary 内容、合法切分、checkpoint/resume 和任务连续性。
 4. **接近 Context Limit 与 PTL Recovery**
    - 前置条件：优先使用真实 Anthropic-compatible 服务能稳定复现的接近 context limit 场景；若服务端限制或计量差异使真实 PTL 无法稳定构造，则仅由 Fake Model 自动测试确定性注入一次及持续 `prompt_too_long`，不把模拟结果写成真实 Demo 通过。
    - 用户输入示例：`继续处理当前长任务，并保留现有 Todo、约束和当前工作状态。`

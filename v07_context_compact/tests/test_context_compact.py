@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from anthropic.types import TextBlock, ToolUseBlock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import agent
@@ -22,6 +23,16 @@ def summary_text():
         "Current Work", "Optional Next Step",
     )
     return "\n".join(f"## {i}. {title}\nPreserved {title}." for i, title in enumerate(titles, 1))
+
+
+def summary_call_contains(call, text):
+    for message in call["messages"][:-1]:
+        content = message.get("content")
+        if isinstance(content, str) and text in content:
+            return True
+        if isinstance(content, list) and any(text in str(agent._value(block, "text", "")) for block in content):
+            return True
+    return False
 
 
 class ScriptedMessages:
@@ -68,6 +79,44 @@ def test_estimate_counts_system_messages_and_tools():
     assert agent.estimate_context_tokens([], tools=agent.TOOLS + [{"name": "x", "description": "y" * 300}]) > base
 
 
+@pytest.mark.parametrize(("mechanisms", "action"), [
+    ([], "none"),
+    (["microcompact"], "MicroCompact"),
+    (["tool_result_budget", "microcompact", "full_compact"], "ToolResultBudget+MicroCompact+FullCompact"),
+])
+def test_context_budget_cli_displays_existing_event_data(context_runtime, mechanisms, action):
+    _, logger, _, _ = context_runtime
+    data = {
+        "round": 2,
+        "estimated_tokens": 12_700,
+        "trigger_tokens": 16_000,
+        "target_tokens": 8_000,
+        "triggered": bool(mechanisms),
+        "reason": "request_preflight",
+        "mechanisms": mechanisms,
+        "before_tokens": 18_000,
+        "after_tokens": 12_700,
+        "tool_results_processed": 2,
+        "tool_result_before_chars": 20_000,
+        "tool_result_after_chars": 200,
+        "summary_called": "full_compact" in mechanisms,
+    }
+
+    logger.emit("context.budget", "run-1", **data)
+
+    shown = logger.stream.getvalue().strip()
+    assert shown.startswith(
+        f"[context.budget] estimated_tokens=12700 | trigger_tokens=16000 | action={action}"
+    )
+    if mechanisms:
+        assert "before_tokens=18000 | after_tokens=12700 | target_tokens=8000" in shown
+        assert "tool_results_processed=2" in shown
+    else:
+        assert "before_tokens=" not in shown
+    recorded = json.loads(logger.log_path.read_text(encoding="utf-8"))["data"]
+    assert recorded == data
+
+
 def test_small_context_is_a_true_noop_without_checkpoint(context_runtime, monkeypatch):
     _, logger, state, state_path = context_runtime
     messages = [{"role": "user", "content": "small"}]
@@ -109,7 +158,42 @@ def test_tool_result_budget_persists_then_replaces_payload_and_checkpoints(conte
     assert "HEAD" in block["content"] and "TAIL" in block["content"]
     reference = block["content"].split("reference=", 1)[1].split("]", 1)[0]
     assert Path(reference).read_text() == raw
+    assert Path(reference) == agent.ARTIFACT_DIR / "session-1" / "tool-1.txt"
     assert agent.load_state(state_path)["messages"] == messages
+
+
+def test_deterministic_artifact_reuses_identical_content_and_rejects_conflict(context_runtime):
+    _, logger, state, state_path = context_runtime
+    first_raw = "a" * 17_001
+    first = paired_result(first_raw, "stable-tool")
+    state["messages"] = first
+    agent.prepare_context(first, logger, "run-1", 1, state, state_path)
+    path = agent.ARTIFACT_DIR / "session-1" / "stable-tool.txt"
+    assert path.read_text(encoding="utf-8") == first_raw
+
+    identical = paired_result(first_raw, "stable-tool")
+    state["messages"] = identical
+    agent.prepare_context(identical, logger, "run-2", 1, state, state_path)
+    assert list((agent.ARTIFACT_DIR / "session-1").glob("*.txt")) == [path]
+
+    conflicting = paired_result("b" * 17_001, "stable-tool")
+    original = copy.deepcopy(conflicting)
+    state["messages"] = conflicting
+    with pytest.raises(ValueError, match="different content"):
+        agent.prepare_context(conflicting, logger, "run-3", 1, state, state_path)
+    assert conflicting == original and state["messages"] == original
+    assert path.read_text(encoding="utf-8") == first_raw
+
+
+def test_artifact_filename_encoding_is_deterministic_and_collision_free(context_runtime):
+    assert agent._artifact_reference("session-1", "tool/a") == (
+        agent.ARTIFACT_DIR / "session-1" / "tool%2Fa.txt"
+    )
+    assert agent._artifact_reference("session-1", "tool_a") == (
+        agent.ARTIFACT_DIR / "session-1" / "tool_a.txt"
+    )
+    with pytest.raises(ValueError, match="artifact filename"):
+        agent._artifact_reference("session-1", "x" * 241)
 
 
 def test_tool_result_marker_text_does_not_skip_budget_compaction(context_runtime):
@@ -139,17 +223,128 @@ def test_persistence_or_checkpoint_failure_never_leaves_active_reference(context
     assert state["messages"] == original
 
 
-def test_microcompact_only_old_consumed_results(context_runtime):
-    _, logger, state, state_path = context_runtime
+def consumed_result_history(count, result_chars=20):
     messages = [{"role": "user", "content": "start"}]
-    for number in range(3):
-        messages += paired_result(str(number) * 5000, f"tool-{number}")
+    for number in range(count):
+        messages += paired_result(str(number) * result_chars, f"tool-{number}")
+    messages.append({"role": "assistant", "content": [{"type": "text", "text": "consumed"}]})
+    return messages
+
+
+def test_microcompact_is_pressure_driven(context_runtime, monkeypatch):
+    _, logger, state, state_path = context_runtime
+    messages = consumed_result_history(4)
+    state["messages"] = messages
+    original = copy.deepcopy(messages)
+    monkeypatch.setattr(agent, "estimate_context_tokens", lambda *args, **kwargs: 15_999)
+
+    agent.prepare_context(messages, logger, "run-1", 1, state, state_path)
+
+    assert messages == original
+    assert not state_path.exists()
+    assert not list(agent.ARTIFACT_DIR.rglob("*.txt"))
+
+
+def test_microcompact_keeps_three_recent_and_stops_at_ratio_oldest_first(context_runtime, monkeypatch):
+    _, logger, state, state_path = context_runtime
+    messages = consumed_result_history(6)
+    state["messages"] = messages
+
+    def fake_estimate(candidate, **_kwargs):
+        compacted = sum(
+            (_tool := agent._tool_result_text(block)) is not None
+            and _tool.startswith("[Earlier tool result saved at ")
+            for _, blocks in agent._result_messages(candidate)
+            for block in blocks
+        )
+        return {0: 16_000, 1: 14_000}.get(compacted, 12_800)
+
+    monkeypatch.setattr(agent, "estimate_context_tokens", fake_estimate)
+    result = agent.prepare_context(messages, logger, "run-1", 1, state, state_path)
+
+    contents = [blocks[0]["content"] for _, blocks in agent._result_messages(messages)]
+    assert contents[0].startswith("[Earlier tool result saved at ")
+    assert contents[1].startswith("[Earlier tool result saved at ")
+    assert contents[2] == "2" * 20
+    assert contents[3:] == [str(number) * 20 for number in range(3, 6)]
+    assert result == {"full_compact": False, "estimated_tokens": 12_800}
+    assert len(list(agent.ARTIFACT_DIR.rglob("*.txt"))) == 2
+    assert agent.load_state(state_path)["messages"] == messages
+    agent.validate_llm_message_protocol(messages)
+
+
+def test_microcompact_reuses_tool_budget_artifact(context_runtime, monkeypatch):
+    _, logger, state, state_path = context_runtime
+    raw = "x" * 17_001
+    messages = paired_result(raw, "tool-0")
     state["messages"] = messages
     agent.prepare_context(messages, logger, "run-1", 1, state, state_path)
+    budgeted = messages[1]["content"][0]["content"]
+    reference = budgeted.rsplit("reference=", 1)[1].split("]", 1)[0]
+    assert Path(reference).read_text(encoding="utf-8") == raw
+
+    for number in range(1, 4):
+        messages += paired_result(str(number) * 20, f"tool-{number}")
+    messages.append({"role": "assistant", "content": [{"type": "text", "text": "consumed"}]})
+    before_artifacts = set(agent.ARTIFACT_DIR.rglob("*.txt"))
+
+    def fake_estimate(candidate, **_kwargs):
+        first = agent._result_messages(candidate)[0][1][0]["content"]
+        return 12_800 if first.startswith("[Earlier tool result saved at ") else 16_000
+
+    monkeypatch.setattr(agent, "estimate_context_tokens", fake_estimate)
+    agent.prepare_context(messages, logger, "run-1", 2, state, state_path)
+
+    placeholder = agent._result_messages(messages)[0][1][0]["content"]
+    assert placeholder == f"[Earlier tool result saved at {reference}]"
+    assert set(agent.ARTIFACT_DIR.rglob("*.txt")) == before_artifacts
+
+    messages += paired_result("4" * 20, "tool-4")
+    messages.append({"role": "assistant", "content": [{"type": "text", "text": "consumed again"}]})
+
+    def repeated_pressure_estimate(candidate, **_kwargs):
+        placeholders = sum(
+            (agent._tool_result_text(block) or "").startswith("[Earlier tool result saved at ")
+            for _, blocks in agent._result_messages(candidate)
+            for block in blocks
+        )
+        return 12_800 if placeholders >= 2 else 16_000
+
+    monkeypatch.setattr(agent, "estimate_context_tokens", repeated_pressure_estimate)
+    agent.prepare_context(messages, logger, "run-1", 3, state, state_path)
     contents = [blocks[0]["content"] for _, blocks in agent._result_messages(messages)]
-    assert "[Full Tool Result:" in contents[0]
-    assert contents[1] == "1" * 5000
-    assert contents[2] == "2" * 5000
+    assert contents[0] == f"[Earlier tool result saved at {reference}]"
+    assert contents[1].startswith("[Earlier tool result saved at ")
+    assert len(set(agent.ARTIFACT_DIR.rglob("*.txt"))) == len(before_artifacts) + 1
+
+
+def test_microcompact_exhaustion_then_enters_full_compact(context_runtime, monkeypatch):
+    scripted, logger, state, state_path = context_runtime
+    scripted.items[:] = [response(summary_text())]
+    messages = consumed_result_history(5) + [{"role": "user", "content": "continue"}]
+    state["messages"] = messages
+
+    def fake_estimate(candidate, system=agent.SYSTEM, tools=agent.TOOLS):
+        if system == agent.SUMMARY_SYSTEM:
+            return 100
+        if candidate and isinstance(candidate[0].get("content"), list):
+            text = candidate[0]["content"][0].get("text", "")
+            if text.startswith("<context_summary>"):
+                return 7_999
+        return 16_000
+
+    monkeypatch.setattr(agent, "estimate_context_tokens", fake_estimate)
+    result = agent.prepare_context(messages, logger, "run-1", 1, state, state_path)
+
+    assert result["full_compact"] is True
+    assert len(list(agent.ARTIFACT_DIR.rglob("*.txt"))) == 2
+    summarized = scripted.calls[0]["messages"]
+    assert sum(
+        (agent._tool_result_text(block) or "").startswith("[Earlier tool result saved at ")
+        for _, blocks in agent._result_messages(summarized[:-1])
+        for block in blocks
+    ) == 2
+    agent.validate_llm_message_protocol(messages)
 
 
 def long_history():
@@ -231,8 +426,8 @@ def test_full_compact_falls_back_from_two_to_one_raw_round(context_runtime, monk
     assert result["full_compact"] is True
     assert compacted_raw_rounds(messages) == 1
     assert len(scripted.calls) == 2
-    assert "request 1" in scripted.calls[0]["messages"][0]["content"]
-    assert "request 2" in scripted.calls[1]["messages"][0]["content"]
+    assert summary_call_contains(scripted.calls[0], "request 1")
+    assert summary_call_contains(scripted.calls[1], "request 2")
     agent.validate_llm_message_protocol(messages)
     assert agent.load_state(state_path)["messages"] == messages
 
@@ -322,7 +517,7 @@ def test_recent_raw_tail_rolls_into_a_later_summary(context_runtime, monkeypatch
     monkeypatch.setattr(agent, "CONTEXT_TRIGGER_TOKENS", 1)
     monkeypatch.setattr(agent, "CONTEXT_TARGET_TOKENS", 100_000)
     agent.prepare_context(messages, logger, "run-1", 1, state, state_path)
-    assert "request 2" not in scripted.calls[0]["messages"][0]["content"]
+    assert not summary_call_contains(scripted.calls[0], "request 2")
 
     messages.extend((
         {"role": "assistant", "content": [{"type": "text", "text": "current answer"}]},
@@ -331,7 +526,47 @@ def test_recent_raw_tail_rolls_into_a_later_summary(context_runtime, monkeypatch
         {"role": "user", "content": "continue again"},
     ))
     agent.prepare_context(messages, logger, "run-1", 2, state, state_path)
-    assert "request 2" in scripted.calls[1]["messages"][0]["content"]
+    assert summary_call_contains(scripted.calls[1], "request 2")
+    agent.validate_llm_message_protocol(messages)
+
+
+def test_full_compact_summary_accepts_real_anthropic_sdk_blocks(context_runtime, monkeypatch):
+    scripted, logger, state, state_path = context_runtime
+    scripted.items[:] = [response(summary_text())]
+    messages = [
+        {"role": "user", "content": "inspect"},
+        {"role": "assistant", "content": [
+            TextBlock(type="text", text="I will inspect the file."),
+            ToolUseBlock(type="tool_use", id="tool-sdk", name="read_file", input={"path": "agent.py"}),
+        ]},
+        {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tool-sdk", "content": "file contents"},
+        ]},
+        {"role": "assistant", "content": [TextBlock(type="text", text="inspection complete")]},
+        {"role": "user", "content": "continue"},
+    ]
+    state["messages"] = messages
+
+    def fake_estimate(candidate, system=agent.SYSTEM, tools=agent.TOOLS):
+        if system == agent.SUMMARY_SYSTEM:
+            return 100
+        if candidate and isinstance(candidate[0].get("content"), list):
+            text = agent._value(candidate[0]["content"][0], "text", "")
+            if str(text).startswith("<context_summary>"):
+                return 7_999
+        return 16_000
+
+    monkeypatch.setattr(agent, "estimate_context_tokens", fake_estimate)
+    result = agent.prepare_context(messages, logger, "run-1", 1, state, state_path)
+
+    assert result["full_compact"] is True
+    summary_messages = scripted.calls[0]["messages"]
+    assistant_blocks = summary_messages[1]["content"]
+    assert isinstance(assistant_blocks[0], TextBlock)
+    assert isinstance(assistant_blocks[1], ToolUseBlock)
+    assert summary_messages[2]["content"][0]["tool_use_id"] == "tool-sdk"
+    assert summary_messages[-1]["content"].startswith("Summarize the preceding older history")
+    agent.validate_llm_message_protocol(summary_messages)
     agent.validate_llm_message_protocol(messages)
 
 

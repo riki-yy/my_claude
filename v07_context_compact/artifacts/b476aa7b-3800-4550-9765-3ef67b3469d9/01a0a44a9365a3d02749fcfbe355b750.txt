@@ -1,0 +1,52 @@
+exit_code=0
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _jsonable(model_dump(mode="json"))
+    if hasattr(value, "__dict__"):
+        return _jsonable(vars(value))
+    raise TypeError(f"value is not JSON serializable: {type(value).__name__}")
+
+
+def new_runtime_state(session_id: str) -> dict[str, Any]:
+    return {
+        "schema_version": STATE_SCHEMA_VERSION,
+        "session_id": session_id,
+        "messages": [],
+        "todos": [],
+        "current_run": None,
+        "interruption_info": None,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+---TAIL 450---
+    snapshot["updated_at"] = datetime.now(UTC).isoformat()
+    serialized = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, indent=2)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with temp_path.open("x", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, path)
+    except (OSError, TypeError, ValueError) as exc:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise StateSaveError(redact(str(exc))) from exc
+    state["updated_at"] = snapshot["updated_at"]
+
+
+def checkpoint(
+    state: dict[str, Any] | None,
+    state_path: Path | None,
+    logger: "EventLogger",
+    reason: str,
+) -> None:
+    if state is None or state_path is None:
+        return
+    state["todos"] = _jsonable(TODO_STATE)
+    save_state(state, state_path)
+    logger.emit("checkpoint.saved", _current_run_id(state), reason=reason, state_path=str(state_path))
+

@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import quote
 
 
 def _configure_line_editing(readline_module: Any) -> None:
@@ -210,7 +211,8 @@ SUMMARY_INPUT_LIMIT = 96_000
 SINGLE_TOOL_RESULT_CHARS = 16_000
 TOOL_RESULT_BATCH_CHARS = 32_000
 TOOL_RESULT_PREVIEW_CHARS = 2_000
-MICROCOMPACT_MIN_CHARS = 4_000
+MICROCOMPACT_KEEP_RECENT_RESULTS = 3
+MICROCOMPACT_TARGET_RATIO = 0.8
 RECENT_RAW_ROUNDS = 2
 SUMMARY_MAX_TOKENS = 4_000
 
@@ -784,6 +786,28 @@ class EventLogger:
             return
         if event["event_type"] in {"tool.completed", "tool.failed"}:
             print(f"[Tool Result] {data['display']}", file=self.stream)
+            return
+        if event["event_type"] == "context.budget":
+            names = {
+                "tool_result_budget": "ToolResultBudget",
+                "microcompact": "MicroCompact",
+                "full_compact": "FullCompact",
+            }
+            mechanisms = data.get("mechanisms") or []
+            action = "+".join(names.get(item, str(item)) for item in mechanisms) or "none"
+            fields = [
+                f"estimated_tokens={data['estimated_tokens']}",
+                f"trigger_tokens={data['trigger_tokens']}",
+                f"action={action}",
+            ]
+            if mechanisms:
+                fields.extend((
+                    f"before_tokens={data['before_tokens']}",
+                    f"after_tokens={data['after_tokens']}",
+                    f"target_tokens={data['target_tokens']}",
+                    f"tool_results_processed={data['tool_results_processed']}",
+                ))
+            print(f"[{label}] {' | '.join(fields)}", file=self.stream)
             return
         detail = data.get("message") or data.get("status") or data.get("tool_name") or ""
         print(f"[{label}] {detail}".rstrip(), file=self.stream)
@@ -1565,12 +1589,18 @@ def _tool_result_text(block: dict[str, Any]) -> str | None:
     return content if isinstance(content, str) else None
 
 
-def _artifact_reference(session_id: str, run_id: str, tool_use_id: str) -> Path:
-    safe_tool_id = re.sub(r"[^A-Za-z0-9_.-]", "_", tool_use_id)[:80] or "tool"
-    return ARTIFACT_DIR / session_id / run_id / f"{safe_tool_id}-{uuid.uuid4().hex}.txt"
+def _artifact_reference(session_id: str, tool_use_id: str) -> Path:
+    encoded_tool_id = quote(tool_use_id, safe="")
+    if not encoded_tool_id or len(encoded_tool_id.encode("ascii")) > 240:
+        raise ValueError("tool_use_id cannot be represented safely as an artifact filename")
+    return ARTIFACT_DIR / session_id / f"{encoded_tool_id}.txt"
 
 
 def _persist_tool_result(path: Path, content: str) -> None:
+    if path.exists():
+        if path.is_file() and path.read_text(encoding="utf-8") == content:
+            return
+        raise ValueError("tool_use_id artifact already exists with different content")
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -1578,7 +1608,12 @@ def _persist_tool_result(path: Path, content: str) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temp, path)
+        try:
+            os.link(temp, path)
+        except FileExistsError:
+            if not path.is_file() or path.read_text(encoding="utf-8") != content:
+                raise ValueError("tool_use_id artifact already exists with different content")
+        temp.unlink()
         if path.read_text(encoding="utf-8") != content:
             raise OSError("persisted Tool Result verification failed")
     except Exception:
@@ -1590,12 +1625,12 @@ def _persist_tool_result(path: Path, content: str) -> None:
 
 
 def _compact_result_block(
-    block: dict[str, Any], session_id: str, run_id: str, preview_chars: int = TOOL_RESULT_PREVIEW_CHARS,
+    block: dict[str, Any], session_id: str, preview_chars: int = TOOL_RESULT_PREVIEW_CHARS,
 ) -> tuple[int, int, str] | None:
     raw = _tool_result_text(block)
     if raw is None or len(raw) <= preview_chars:
         return None
-    path = _artifact_reference(session_id, run_id, str(block["tool_use_id"]))
+    path = _artifact_reference(session_id, str(block["tool_use_id"]))
     _persist_tool_result(path, raw)
     head = preview_chars // 2
     tail = preview_chars - head
@@ -1620,7 +1655,7 @@ def _result_messages(messages: list[dict[str, Any]]) -> list[tuple[int, list[dic
 
 
 def _apply_tool_result_budget(
-    messages: list[dict[str, Any]], session_id: str, run_id: str
+    messages: list[dict[str, Any]], session_id: str
 ) -> list[dict[str, Any]]:
     processed = []
     batches = _result_messages(messages)
@@ -1633,7 +1668,7 @@ def _apply_tool_result_budget(
     preview_chars = min(TOOL_RESULT_PREVIEW_CHARS, max(128, TOOL_RESULT_BATCH_CHARS // max(1, len(blocks)) - 512))
     candidates = range(len(blocks)) if batch_over else [i for i, size in enumerate(lengths) if size > SINGLE_TOOL_RESULT_CHARS]
     for i in sorted(set(candidates), key=lambda item: lengths[item], reverse=True):
-        result = _compact_result_block(blocks[i], session_id, run_id, preview_chars)
+        result = _compact_result_block(blocks[i], session_id, preview_chars)
         if result:
             processed.append({"tool_use_id": blocks[i]["tool_use_id"], "before_chars": result[0], "after_chars": result[1], "reference": result[2]})
     active_chars = sum(len(_tool_result_text(block) or "") for block in blocks)
@@ -1643,19 +1678,45 @@ def _apply_tool_result_budget(
 
 
 def _apply_microcompact(
-    messages: list[dict[str, Any]], session_id: str, run_id: str
+    messages: list[dict[str, Any]], session_id: str
 ) -> list[dict[str, Any]]:
-    batches = _result_messages(messages)
-    # The newest two completed Tool batches are the explainable recent/current-work boundary.
-    eligible = batches[:-RECENT_RAW_ROUNDS] if len(batches) > RECENT_RAW_ROUNDS else []
+    consumed = []
+    for message_index, blocks in _result_messages(messages):
+        if any(message.get("role") == "assistant" for message in messages[message_index + 1:]):
+            consumed.extend(blocks)
+    eligible = consumed[:-MICROCOMPACT_KEEP_RECENT_RESULTS]
     processed = []
-    for _index, blocks in eligible:
-        for block in blocks:
-            raw = _tool_result_text(block)
-            if raw is not None and len(raw) > MICROCOMPACT_MIN_CHARS:
-                result = _compact_result_block(block, session_id, run_id)
-                if result:
-                    processed.append({"tool_use_id": block["tool_use_id"], "before_chars": result[0], "after_chars": result[1], "reference": result[2]})
+    target = CONTEXT_TRIGGER_TOKENS * MICROCOMPACT_TARGET_RATIO
+    for block in eligible:
+        raw = _tool_result_text(block)
+        if raw is None:
+            continue
+        placeholder = re.fullmatch(r"\[Earlier tool result saved at (.+)\]", raw)
+        if placeholder:
+            if not Path(placeholder.group(1)).is_file():
+                raise ValueError("MicroCompact artifact reference is not accessible")
+            continue
+        match = re.search(r"\n\[Full Tool Result: original_chars=(\d+); reference=(.+)\]\Z", raw)
+        reference = None
+        if match:
+            candidate = Path(match.group(2))
+            try:
+                if candidate.is_file() and len(candidate.read_text(encoding="utf-8")) == int(match.group(1)):
+                    reference = candidate.resolve().as_posix()
+            except OSError:
+                reference = None
+            if reference is None:
+                raise ValueError("Tool Result Budget artifact reference is not accessible")
+        if reference is None:
+            path = _artifact_reference(session_id, str(block["tool_use_id"]))
+            _persist_tool_result(path, raw)
+            reference = path.resolve().as_posix()
+        before_chars = len(raw)
+        block["content"] = f"[Earlier tool result saved at {reference}]"
+        processed.append({"tool_use_id": block["tool_use_id"], "before_chars": before_chars,
+                          "after_chars": len(block["content"]), "reference": reference})
+        if estimate_context_tokens(messages) <= target:
+            break
     return processed
 
 
@@ -1700,10 +1761,11 @@ def _full_compact(messages: list[dict[str, Any]], logger: EventLogger, run_id: s
 
     for attempt, cut in enumerate(boundaries, 1):
         old, recent = messages[:cut], messages[cut:]
-        summary_messages = [{"role": "user", "content": (
-            "Summarize this older history JSON:\n" + json.dumps(old, ensure_ascii=False)
-            + "\nCurrent durable Todo State:\n" + json.dumps(TODO_STATE, ensure_ascii=False)
+        summary_messages = copy.deepcopy(old) + [{"role": "user", "content": (
+            "Summarize the preceding older history using the required nine-section schema."
+            "\nCurrent durable Todo State:\n" + json.dumps(TODO_STATE, ensure_ascii=False)
         )}]
+        validate_llm_message_protocol(summary_messages)
         summary_estimate = estimate_context_tokens(summary_messages, system=SUMMARY_SYSTEM, tools=[])
         if summary_estimate >= SUMMARY_INPUT_LIMIT:
             raise ValueError("summary request exceeds its safe input budget")
@@ -1733,8 +1795,13 @@ def prepare_context(
     session_id = runtime_state["session_id"] if runtime_state else logger.session_id
     before = estimate_context_tokens(working)
     try:
-        budgeted = _apply_tool_result_budget(working, session_id, run_id)
-        micro = _apply_microcompact(working, session_id, run_id)
+        budgeted = _apply_tool_result_budget(working, session_id)
+        after_budget = estimate_context_tokens(working)
+        micro = (
+            _apply_microcompact(working, session_id)
+            if after_budget >= CONTEXT_TRIGGER_TOKENS
+            else []
+        )
         after_low_cost = estimate_context_tokens(working)
         full = force_full or after_low_cost >= CONTEXT_TRIGGER_TOKENS
         if full:

@@ -1,0 +1,121 @@
+exit_code=0
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _jsonable(model_dump(mode="json"))
+    if hasattr(value, "__dict__"):
+        return _jsonable(vars(value))
+    raise TypeError(f"value is not JSON serializable: {type(value).__name__}")
+
+
+def new_runtime_state(session_id: str) -> dict[str, Any]:
+    return {
+        "schema_version": STATE_SCHEMA_VERSION,
+        "session_id": session_id,
+        "messages": [],
+        "todos": [],
+        "current_run": None,
+        "interruption_info": None,
+        "updated_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def _validate_todos_state(todos: Any) -> list[dict[str, str]]:
+    if not isinstance(todos, list) or len(todos) > MAX_TODOS:
+        raise StateLoadError("'todos' must be an array with at most 20 items")
+    seen: set[str] = set()
+    in_progress = 0
+    validated: list[dict[str, str]] = []
+    for index, todo in enumerate(todos):
+        if not isinstance(todo, dict) or set(todo) != {"id", "content", "status"}:
+            raise StateLoadError(f"todos[{index}] has an invalid structure")
+        todo_id, content, status = todo["id"], todo["content"], todo["status"]
+        if not isinstance(todo_id, str) or not todo_id.strip() or todo_id in seen:
+            raise StateLoadError(f"todos[{index}].id is invalid or duplicated")
+        if not isinstance(content, str) or not content.strip():
+            raise StateLoadError(f"todos[{index}].content is invalid")
+        if status not in TODO_STATUSES:
+            raise StateLoadError(f"todos[{index}].status is invalid")
+        in_progress += status == "in_progress"
+        if in_progress > 1:
+            raise StateLoadError("at most one persisted todo may be in_progress")
+        seen.add(todo_id)
+        validated.append({"id": todo_id, "content": content, "status": status})
+    return validated
+
+
+def validate_runtime_state(value: Any) -> dict[str, Any]:
+    required = {
+        "schema_version",
+        "session_id",
+        "messages",
+        "todos",
+        "current_run",
+        "interruption_info",
+    }
+    if not isinstance(value, dict) or not required <= set(value):
+        raise StateLoadError("state is missing required fields")
+    if value["schema_version"] != STATE_SCHEMA_VERSION:
+        raise StateLoadError(
+            f"incompatible schema_version: {value['schema_version']!r}"
+        )
+    if not isinstance(value["session_id"], str) or not value["session_id"]:
+        raise StateLoadError("session_id must be a non-empty string")
+    if not isinstance(value["messages"], list) or not all(
+        isinstance(message, dict)
+        and message.get("role") in {"user", "assistant"}
+        and "content" in message
+        for message in value["messages"]
+    ):
+        raise StateLoadError("messages has an invalid structure")
+    todos = _validate_todos_state(value["todos"])
+    current_run = value["current_run"]
+    if current_run is not None:
+        if not isinstance(current_run, dict) or set(current_run) != {
+            "run_id",
+            "status",
+            "round",
+        }:
+            raise StateLoadError("current_run has an invalid structure")
+        if not isinstance(current_run["run_id"], str) or not current_run["run_id"]:
+            raise StateLoadError("current_run.run_id must be a non-empty string")
+        if current_run["status"] not in RUN_STATUSES:
+            raise StateLoadError("current_run.status is invalid")
+        if (
+            not isinstance(current_run["round"], int)
+            or isinstance(current_run["round"], bool)
+            or current_run["round"] < 0
+        ):
+            raise StateLoadError("current_run.round must be a non-negative integer")
+    interruption = value["interruption_info"]
+    if interruption is not None:
+        if not isinstance(interruption, dict) or interruption.get("phase") not in INTERRUPTION_PHASES:
+            raise StateLoadError("interruption_info has an invalid phase")
+        allowed = {"phase", "tool_name", "tool_use_id"}
+        if not set(interruption) <= allowed:
+            raise StateLoadError("interruption_info contains unknown fields")
+        for name in set(interruption) - {"phase"}:
+            if not isinstance(interruption[name], str) or not interruption[name]:
+                raise StateLoadError(f"interruption_info.{name} is invalid")
+    validate_persisted_message_protocol(value["messages"], current_run, interruption)
+    restored = _jsonable(value)
+    restored["todos"] = todos
+    restored.setdefault("updated_at", None)
+    return restored
+
+
+def load_state(path: Path) -> dict[str, Any]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+        value = json.loads(raw)
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise StateLoadError(redact(str(exc))) from exc
+    return validate_runtime_state(value)
+
+
+def save_state(state: dict[str, Any], path: Path) -> None:
+    """Commit one state snapshot with a same-directory atomic replacement."""
+    path = Path(path)
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    snapshot = _jsonable(state)

@@ -1,0 +1,152 @@
+exit_code=0
+agent.py
+"""V07: context budgeting and safe compaction on the V06 runtime."""
+
+from __future__ import annotations
+
+import json
+import copy
+import os
+import random
+import re
+import subprocess
+import sys
+import time
+import uuid
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import quote
+
+
+def _configure_line_editing(readline_module: Any) -> None:
+    """Enable the small set of libedit bindings used by the reference project."""
+    readline_module.parse_and_bind("set bind-tty-special-chars off")
+    readline_module.parse_and_bind("set input-meta on")
+    readline_module.parse_and_bind("set output-meta on")
+    readline_module.parse_and_bind("set convert-meta off")
+
+
+try:
+    import readline
+
+    _configure_line_editing(readline)
+except ImportError:
+    # Python builds without readline still run, but do not get interactive editing.
+    pass
+
+from anthropic import Anthropic
+from dotenv import load_dotenv
+
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+STATE_DIR = Path(__file__).resolve().parent / "state"
+ARTIFACT_DIR = Path(__file__).resolve().parent / "artifacts"
+WORKSPACE_ROOT = Path(__file__).resolve().parent
+SYSTEM = (
+    "You are a concise coding agent. Use the available tools to inspect and modify "
+    "the workspace and to run commands when the task requires it. Paths are relative "
+    "to the workspace. Complete the user's stated task directly and stop exploring once "
+    "you have enough evidence to answer. Do not inspect parent directories, Git state, "
+    "environment files, or runtime source unless the user explicitly asks. When the user "
+    "names files to create, create them directly instead of repeatedly listing directories. "
+    "Use glob, grep, and read_file for discovery; use write_file and edit_file for file "
+    "changes; reserve bash for commands and tests. Run "
+    "Python tests with 'python3.12 -m pytest', then give the final answer as soon as the "
+    "requested result is verified. If a tool result contains PERMISSION_DENIED, do not "
+    "try another tool or workaround unless the user explicitly requested an alternative; "
+    "explain the denial and finish the current task. For complex multi-step work, make "
+    "todo_write the first tool call before discovery or mutation, especially for tasks involving "
+    "multiple files or distinct implementation and verification stages, even when the user "
+    "does not explicitly ask for a plan or Todo. Todo items must describe actual deliverable "
+    "work, not meta-work such as planning or breaking down the task. Use moderate granularity: "
+    "each item should be an independently actionable and verifiable stage. For multi-file "
+    "deliverables, use separate items when files or components can progress independently, "
+    "but do not split simple operations into many tiny todos. Every "
+    "todo_write call must contain the complete current todo list, with at most one item "
+    "in_progress. Explicitly call todo_write again to mark completed work; tool results do "
+    "not update todos automatically. When a Todo maintenance reminder appears, review the "
+    "real progress and normally update the complete TodoList before another non-Todo tool "
+    "call when the progress has changed. Report what you changed and what you verified."
+)
+TOOLS = [
+    {
+        "name": "bash",
+        "description": "Run a shell command in the fixed workspace directory.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout_seconds": {"type": "number", "minimum": 0.1, "maximum": 30},
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "read_file",
+        "description": "Read a UTF-8 text file inside the workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "Create or replace a UTF-8 text file inside the workspace.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": "Replace one unique exact text occurrence in a workspace file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            "required": ["path", "old_text", "new_text"],
+        },
+    },
+    {
+        "name": "glob",
+        "description": "Find workspace paths matching a relative glob pattern.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"pattern": {"type": "string"}},
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "Search UTF-8 workspace files with a regular expression.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string", "default": "."},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "todo_write",
+        "description": (
+            "Create or replace the complete progress list for complex multi-step work, "
+            "especially multi-file implementation and verification tasks. Describe actual "
+            "deliverable stages at moderate, independently verifiable granularity; separate "
+            "multi-file components when their progress can differ, omit planning as a "
+            "meta-task, and avoid tiny operational steps. Send every current "
+            "item on every call. Use pending, in_progress, or completed, with at most one "
+            "in_progress item."
+        ),
