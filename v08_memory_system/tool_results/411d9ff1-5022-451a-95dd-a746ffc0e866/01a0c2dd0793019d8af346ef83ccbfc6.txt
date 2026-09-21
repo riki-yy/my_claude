@@ -1,0 +1,14 @@
+exit_code=0
+total 328
+drwxr-xr-x  12 mimi  staff     384 Sep 20 17:17 .
+drwxr-xr-x@ 17 mimi  staff     544 Sep 20 17:00 ..
+-rw-r--r--   1 mimi  staff   21775 Sep 21 15:01 README.md
+drwxr-xr-x@  4 mimi  staff     128 Sep 21 15:27 __pycache__
+-rw-r--r--@  1 mimi  staff  105053 Sep 20 17:04 agent.py
+drwxr-xr-x@  4 mimi  staff     128 Sep 21 15:27 logs
+drwxr-xr-x   4 mimi  staff     128 Sep 20 17:18 memory
+-rw-r--r--   1 mimi  staff   11254 Sep 20 17:34 memory_pipeline.py
+-rw-r--r--   1 mimi  staff   16410 Sep 21 15:01 memory_store.py
+-rw-r--r--   1 mimi  staff      46 Sep 20 17:01 requirements.txt
+drwxr-xr-x@  4 mimi  staff     128 Sep 21 15:27 state
+drwxr-xr-x   5 mimi  staff     160 Sep 20 17:07 tests

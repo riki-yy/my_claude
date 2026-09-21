@@ -1,0 +1,420 @@
+{
+  "current_run": {
+    "round": 10,
+    "run_id": "2f901bfa-7da0-488e-8f9b-6a789e65d55e",
+    "status": "completed"
+  },
+  "interruption_info": null,
+  "last_memory_message_index": 19,
+  "messages": [
+    {
+      "content": "给我解释一下 V08 的 Memory Recall 调用链。",
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "caller": null,
+          "id": "01a0c2dd00275dbae3beb4ec1b460b9b",
+          "input": {
+            "pattern": "**/V08*/**"
+          },
+          "name": "glob",
+          "toolset_name": null,
+          "type": "tool_use"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd02cf986e4d72690135d4aee2",
+          "input": {
+            "pattern": "**/*V08*"
+          },
+          "name": "glob",
+          "toolset_name": null,
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "[Earlier tool result saved at /Users/mimi/Desktop/agentloop/v08_memory_system/tool_results/411d9ff1-5022-451a-95dd-a746ffc0e866/01a0c2dd00275dbae3beb4ec1b460b9b.txt]",
+          "tool_use_id": "01a0c2dd00275dbae3beb4ec1b460b9b",
+          "type": "tool_result"
+        },
+        {
+          "content": "[Earlier tool result saved at /Users/mimi/Desktop/agentloop/v08_memory_system/tool_results/411d9ff1-5022-451a-95dd-a746ffc0e866/01a0c2dd02cf986e4d72690135d4aee2.txt]",
+          "tool_use_id": "01a0c2dd02cf986e4d72690135d4aee2",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "signature": "ysbnxadqbr",
+          "thinking": "Let me explore the workspace structure.",
+          "type": "thinking"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd0793019d8af346ef83ccbfc6",
+          "input": {
+            "command": "ls -la"
+          },
+          "name": "bash",
+          "toolset_name": null,
+          "type": "tool_use"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd0818cf6c7708ef08ee22c2f2",
+          "input": {
+            "pattern": "**/V08*"
+          },
+          "name": "glob",
+          "toolset_name": null,
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "[Earlier tool result saved at /Users/mimi/Desktop/agentloop/v08_memory_system/tool_results/411d9ff1-5022-451a-95dd-a746ffc0e866/01a0c2dd0793019d8af346ef83ccbfc6.txt]",
+          "tool_use_id": "01a0c2dd0793019d8af346ef83ccbfc6",
+          "type": "tool_result"
+        },
+        {
+          "content": "[Earlier tool result saved at /Users/mimi/Desktop/agentloop/v08_memory_system/tool_results/411d9ff1-5022-451a-95dd-a746ffc0e866/01a0c2dd0818cf6c7708ef08ee22c2f2.txt]",
+          "tool_use_id": "01a0c2dd0818cf6c7708ef08ee22c2f2",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "signature": "nyemrlxcrx",
+          "thinking": "No V08 directory. Let me search for \"V08\" in the code files.",
+          "type": "thinking"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd0c2143f6d53cc71eec71aa8d",
+          "input": {
+            "pattern": "V08"
+          },
+          "name": "grep",
+          "toolset_name": null,
+          "type": "tool_use"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd0ca87ed712a7f0168c61bbf5",
+          "input": {
+            "pattern": "Memory Recall|memory_recall|MemoryRecall"
+          },
+          "name": "grep",
+          "toolset_name": null,
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "[Earlier tool result saved at /Users/mimi/Desktop/agentloop/v08_memory_system/tool_results/411d9ff1-5022-451a-95dd-a746ffc0e866/01a0c2dd0c2143f6d53cc71eec71aa8d.txt]",
+          "tool_use_id": "01a0c2dd0c2143f6d53cc71eec71aa8d",
+          "type": "tool_result"
+        },
+        {
+          "content": "[Earlier tool result saved at /Users/mimi/Desktop/agentloop/v08_memory_system/tool_results/411d9ff1-5022-451a-95dd-a746ffc0e866/01a0c2dd0ca87ed712a7f0168c61bbf5.txt]",
+          "tool_use_id": "01a0c2dd0ca87ed712a7f0168c61bbf5",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "citations": null,
+          "text": "Let me read the memory_pipeline.py which contains the Recall functionality, and look for where it's invoked in agent.py.\n\n",
+          "type": "text"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd3e5655ee209d169fe6f20911",
+          "input": {
+            "path": "memory_pipeline.py"
+          },
+          "name": "read_file",
+          "toolset_name": null,
+          "type": "tool_use"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd54748347a2d74ace48015c6d",
+          "input": {
+            "path": "agent.py",
+            "pattern": "recall|Recall|memory_pipeline|MemoryPipeline"
+          },
+          "name": "grep",
+          "toolset_name": null,
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "\"\"\"Synchronous Recall, Extract, Store, and low-frequency Consolidate for V08.\"\"\"\n\nfrom __future__ import annotations\n\nimport copy\nimport json\nimport re\nfrom dataclasses import dataclass\nfrom typing import Any, Callable\n\nfrom memory_store import MemoryStore, MemoryStoreError\n\n\nMAX_RECALL = 5\nSELECTOR_MAX_TOKENS = 800\nEXTRACT_MAX_TOKENS = 3000\nEXTRACT_SAFE_INPUT_TOKENS = 96_000\nCONSOLIDATE_COUNT_THRESHOLD = 50\nCONSOLIDATE_INDEX_CHARS_THRESHOLD = 24_000\n\nSELECTOR_SYSTEM = \"\"\"Select persistent memories that are certainly useful for the current request.\nReturn JSON only: {\"ids\":[\"id\"]}. Select zero to five IDs from the supplied index.\nDo not invent IDs, do not repeat IDs, and prefer an empty list when relevance is uncertain.\"\"\"\n\nEXTRACT_SYSTEM = \"\"\"Extract only durable cross-session knowledge. Return JSON only as\n{\"memories\":[{\"id\":\"safe-stable-id\",\"type\":\"user|feedback|project|reference\",\"title\":\"short title\",\"summary\":\"short index summary\",\"body\":\"durable fact\"}]}.\nSave stable user preferences, confirmed feedback, project conventions or architecture facts,\nand reusable references. Ignore current task progress, Todos, one-off paths, full conversation,\nlarge source text, and unconfirmed guesses. Return an empty memories list when nothing qualifies.\"\"\"\n\nCONSOLIDATE_SYSTEM = \"\"\"Consolidate the supplied committed memory store using only deduplication,\nmerging, and pruning. Return JSON only in the same {\"memories\":[...]} schema. Preserve durable\nfacts and stable IDs where possible. Do not invent information.\"\"\"\n\n\ndef _value(obj: Any, name: str, default: Any = None) -> Any:\n    return obj.get(name, default) if isinstance(obj, dict) else getattr(obj, name, default)\n\n\ndef _response_text(response: Any) -> str:\n    content = _value(response, \"content\")\n    if not isinstance(content, list):\n        raise ValueError(\"model response content must be a list\")\n    return \"\".join(str(_value(block, \"text\", \"\")) for block in content if _value(block, \"type\") == \"text\")\n\n\ndef _json_response(response: Any) -> dict[str, Any]:\n    text = _response_text(response).strip()\n    try:\n        value = json.loads(text)\n    except json.JSONDecodeError as exc:\n        raise ValueError(\"memory model response is not valid JSON\") from exc\n    if not isinstance(value, dict):\n        raise ValueError(\"memory model response must be an object\")\n    return value\n\n\ndef _tokens(text: str) -> set[str]:\n    return {token for token in re.findall(r\"[\\w-]+\", text.lower()) if len(token) > 1}\n\n\n@dataclass\nclass RecallResult:\n    system_context: str\n    selected_ids: list[str]\n    selector_path: str\n\n\nclass MemoryPipeline:\n    def __init__(\n        self,\n        store: MemoryStore,\n        create_message: Callable[..., Any],\n        model: str,\n        estimate_tokens: Callable[..., int],\n        logger: Any,\n    ):\n        self.store = store\n        self.create_message = create_message\n        self.model = model\n        self.estimate_tokens = estimate_tokens\n        self.logger = logger\n\n    def _emit(self, event: str, run_id: str | None, **data: Any) -> None:\n        self.logger.emit(event, run_id, **data)\n\n    def _fallback_ids(self, user_text: str, entries: list[dict[str, str]]) -> list[str]:\n        query = _tokens(user_text)\n        ranked: list[tuple[int, str]] = []\n        for entry in entries:\n            overlap = len(query & _tokens(\" \".join((entry[\"name\"], entry[\"description\"], entry[\"type\"]))))\n            if overlap:\n                ranked.append((overlap, entry[\"name\"]))\n        return [memory_id for _score, memory_id in sorted(ranked, key=lambda item: (-item[0], item[1]))[:MAX_RECALL]]\n\n    def recall(self, user_text: str, run_id: str) -> RecallResult:\n        self._emit(\"memory.recall.started\", run_id)\n        try:\n            entries = self.store.read_index(validate_bodies=False)\n        except Exception as exc:\n            self._emit(\"memory.recall.failed\", run_id, error_type=type(exc).__name__, message=str(exc))\n            return RecallResult(\"\", [], \"unavailable\")\n        selected: list[str]\n        path = \"llm\"\n        if not entries:\n            selected = []\n        else:\n            request = {\"request\": user_text, \"memory_index\": entries}\n            try:\n                response = self.create_message(\n                    model=self.model,\n                    system=SELECTOR_SYSTEM,\n                    messages=[{\"role\": \"user\", \"content\": json.dumps(request, ensure_ascii=False)}],\n                    max_tokens=SELECTOR_MAX_TOKENS,\n                )\n                result = _json_response(response)\n                if set(result) != {\"ids\"} or not isinstance(result[\"ids\"], list):\n                    raise ValueError(\"selector response must contain only an ids array\")\n                selected = result[\"ids\"]\n                known = {entry[\"name\"] for entry in entries}\n                if (\n                    len(selected) > MAX_RECALL\n                    or any(not isinstance(item, str) or item not in known for item in selected)\n                    or len(set(selected)) != len(selected)\n                ):\n                    raise ValueError(\"selector returned unknown, duplicate, invalid, or too many ids\")\n            except Exception as exc:\n                path = \"fallback\"\n                selected = self._fallback_ids(user_text, entries)\n                self._emit(\"memory.selector.failed\", run_id, error_type=type(exc).__name__, message=str(exc))\n\n        bodies: list[dict[str, str]] = []\n        valid_selected: list[str] = []\n        for memory_id in selected:\n            try:\n                body = self.store.read(memory_id)\n                index_entry = next(entry for entry in entries if entry[\"name\"] == memory_id)\n                if body[\"id\"] != index_entry[\"name\"] or body[\"summary\"] != index_entry[\"description\"] or body[\"type\"] != index_entry[\"type\"]:\n                    raise MemoryStoreError(\"index/body metadata mismatch\")\n                bodies.append({**index_entry, \"body\": body[\"body\"]})\n                valid_selected.append(memory_id)\n            except Exception as exc:\n                self._emit(\"memory.recall.item_failed\", run_id, memory_id=memory_id, error_type=type(exc).__name__, message=str(exc))\n        context = \"\"\n        if bodies:\n            rendered = \"\\n\\n\".join(f\"[{item['type']}:{item['name']}] {item['description']}\\n{item['body']}\" for item in bodies)\n            context = \"\\n\\n<PersistentMemory>\\n\" + rendered + \"\\n</PersistentMemory>\"\n        self._emit(\n            \"memory.recall.completed\",\n            run_id,\n            selector_path=path,\n            index_candidates=len(entries),\n            selected_count=len(valid_selected),\n        )\n        return RecallResult(context, valid_selected, path)\n\n    @staticmethod\n    def incremental_count(messages: list[dict[str, Any]], cursor: int | None) -> int:\n        if cursor is None:\n            return len(messages)\n        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < -1 or cursor >= len(messages):\n            raise ValueError(\"last_memory_message_index is outside active messages\")\n        return len(messages) - cursor - 1\n\n    def extract_and_store(\n        self,\n        messages: list[dict[str, Any]],\n        cursor: int | None,\n        run_id: str,\n    ) -> dict[str, Any]:\n        n = self.incremental_count(messages, cursor)\n        self._emit(\"memory.extract.started\", run_id, recent_message_count=n)\n        index_text = self.store.index_text()\n        prompt = f\"\"\"Persistent Memory Index:\\n{index_text}\\n\nAnalyze the most recent ~{n} model-visible messages above\nand use them to update persistent memory.\n\nYou MUST only use content from the last ~{n} messages\nas the source of new or updated memories.\n\nEarlier conversation may only be used to:\n- understand context\n- resolve references\n- avoid semantic duplicates\n\nReturn candidates using the required JSON schema.\"\"\"\n        request_messages = copy.deepcopy(messages)\n        request_messages.append({\"role\": \"user\", \"content\": prompt})\n        estimate = self.estimate_tokens(request_messages, system=EXTRACT_SYSTEM, tools=[])\n        if estimate >= EXTRACT_SAFE_INPUT_TOKENS:\n            raise MemoryStoreError(\"memory extract request exceeds its safe input budget\")\n        response = self.create_message(\n            model=self.model,\n            system=EXTRACT_SYSTEM,\n            messages=request_messages,\n            max_tokens=EXTRACT_MAX_TOKENS,\n        )\n        result = _json_response(response)\n        if set(result) != {\"memories\"} or not isinstance(result[\"memories\"], list):\n            raise ValueError(\"extract response must contain only a memories array\")\n        candidates = result[\"memories\"]\n        outcomes: list[str] = []\n        for candidate in candidates:\n            try:\n                outcome = self.store.store(candidate)\n            except Exception as exc:\n                self._emit(\n                    \"memory.store.failed\",\n                    run_id,\n                    memory_id=candidate.get(\"id\") if isinstance(candidate, dict) else None,\n                    error_type=type(exc).__name__,\n                    message=str(exc),\n                )\n                raise\n            outcomes.append(outcome)\n            self._emit(\"memory.store.\" + outcome, run_id, memory_id=candidate.get(\"id\") if isinstance(candidate, dict) else None)\n        self._emit(\n            \"memory.extract.completed\",\n            run_id,\n            recent_message_count=n,\n            candidate_count=len(candidates),\n            added=outcomes.count(\"added\"),\n            skipped=outcomes.count(\"skipped\"),\n            estimated_tokens=estimate,\n        )\n        return {\"candidate_count\": len(candidates), \"outcomes\": outcomes, \"cursor\": len(messages) - 1 if messages else None}\n\n    def should_consolidate(self) -> bool:\n        entries = self.store.read_index(validate_bodies=False)\n        return len(entries) >= CONSOLIDATE_COUNT_THRESHOLD or len(self.store.index_text()) >= CONSOLIDATE_INDEX_CHARS_THRESHOLD\n\n    def consolidate(self, run_id: str) -> bool:\n        if not self.should_consolidate():\n            return False\n        entries = self.store.committed()\n        self._emit(\"memory.consolidate.triggered\", run_id, entry_count=len(entries))\n        try:\n            response = self.create_message(\n                model=self.model,\n                system=CONSOLIDATE_SYSTEM,\n                messages=[{\"role\": \"user\", \"content\": json.dumps({\"memories\": entries}, ensure_ascii=False)}],\n                max_tokens=EXTRACT_MAX_TOKENS,\n            )\n            result = _json_response(response)\n            if set(result) != {\"memories\"} or not isinstance(result[\"memories\"], list):\n                raise ValueError(\"consolidate response must contain only a memories array\")\n            snapshot = self.store.consolidate(result[\"memories\"])\n            self._emit(\"memory.consolidate.snapshot\", run_id, snapshot=str(snapshot))\n            self._emit(\"memory.consolidate.committed\", run_id, entry_count=len(result[\"memories\"]), snapshot=str(snapshot))\n            return True\n        except Exception as exc:\n            self._emit(\"memory.consolidate.rollback\", run_id, error_type=type(exc).__name__, message=str(exc))\n            return False\n",
+          "tool_use_id": "01a0c2dd3e5655ee209d169fe6f20911",
+          "type": "tool_result"
+        },
+        {
+          "content": "agent.py:20:from memory_pipeline import MemoryPipeline\nagent.py:2158:def _memory_pipeline(logger: EventLogger) -> MemoryPipeline:\nagent.py:2159:    return MemoryPipeline(\nagent.py:2176:    pipeline = _memory_pipeline(logger)\nagent.py:2216:    recall_context = \"\"\nagent.py:2218:        recall_context = _memory_pipeline(logger).recall(user_text, run_id).system_context\nagent.py:2220:        logger.emit(\"memory.recall.failed\", run_id, error_type=type(exc).__name__, message=redact(str(exc)))\nagent.py:2221:    request_system = SYSTEM + recall_context",
+          "tool_use_id": "01a0c2dd54748347a2d74ace48015c6d",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "citations": null,
+          "text": "Let me read the relevant caller sections in agent.py around the lines that invoke recall.\n\n",
+          "type": "text"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd60967fe73a8b1940f209fda7",
+          "input": {
+            "path": "agent.py"
+          },
+          "name": "read_file",
+          "toolset_name": null,
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "\"\"\"V07: context budgeting and safe compaction on the V06 runtime.\"\"\"\n\nfrom __future__ import annotations\n\nimport json\nimport copy\nimport os\nimport random\nimport re\nimport subprocess\nimport sys\nimport time\nimport uuid\nfrom datetime import UTC, datetime\nfrom email.utils import parsedate_to_datetime\nfrom pathlib import Path\nfrom typing import Any, Callable\nfrom urllib.parse import quote\n\nfrom memory_pipeline import MemoryPipeline\nfrom memory_store import MemoryStore\n\n\ndef _configure_line_editing(readline_module: Any) -> None:\n    \"\"\"Enable the small set of libedit bindings used by the reference project.\"\"\"\n    readline_module.parse_and_bind(\"set bind-tty-special-chars off\")\n    readline_module.parse_and_bind(\"set input-meta on\")\n    readline_module.parse_and_bind(\"set output-meta on\")\n    readline_module.parse_and_bind(\"set convert-meta off\")\n\n\ntry:\n    import readline\n\n    _configure_line_editing(readline)\nexcept ImportError:\n    # Python builds without readline still run, but do not get\n...\n, \"run.interrupted\")\n                logger.emit(\n                    \"run.interrupted\",\n                    run[\"run_id\"],\n                    round=run[\"round\"],\n                    interruption_info=state.get(\"interruption_info\"),\n                    status=\"interrupted\",\n                )\n            except StateSaveError as exc:\n                print(f\"State Save Error: {exc}\", file=sys.stderr)\n        print(\"\\nSession interrupted.\", file=output)\n    except StateSaveError as exc:\n        exit_status = \"failed\"\n        print(f\"State Save Error: {exc}\", file=sys.stderr)\n        return 4\n    finally:\n        logger.emit(\"session.ended\", status=exit_status)\n    return 0\n\n\nif __name__ == \"__main__\":\n    import argparse\n\n    parser = argparse.ArgumentParser(description=\"V07 context-aware durable coding-agent runtime\")\n    parser.add_argument(\"--resume\", type=Path, help=\"resume a persisted V07 state file\")\n    args = parser.parse_args()\n    raise SystemExit(cli(resume_path=args.resume))\n\n[Full Tool Result: original_chars=104919; reference=/Users/mimi/Desktop/agentloop/v08_memory_system/tool_results/411d9ff1-5022-451a-95dd-a746ffc0e866/01a0c2dd60967fe73a8b1940f209fda7.txt]",
+          "tool_use_id": "01a0c2dd60967fe73a8b1940f209fda7",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "signature": "ourjqejymn",
+          "thinking": "The file was truncated. Let me look at the specific regions around 2150-2230 for the recall caller, and the memory hook area. Let me read targeted line ranges with grep/sed.",
+          "type": "thinking"
+        },
+        {
+          "citations": null,
+          "text": "The file is large. Let me read the relevant regions precisely.\n\n",
+          "type": "text"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd66301e20af894c554cdfb011",
+          "input": {
+            "path": "agent.py"
+          },
+          "name": "read_file",
+          "toolset_name": null,
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "\"\"\"V07: context budgeting and safe compaction on the V06 runtime.\"\"\"\n\nfrom __future__ import annotations\n\nimport json\nimport copy\nimport os\nimport random\nimport re\nimport subprocess\nimport sys\nimport time\nimport uuid\nfrom datetime import UTC, datetime\nfrom email.utils import parsedate_to_datetime\nfrom pathlib import Path\nfrom typing import Any, Callable\nfrom urllib.parse import quote\n\nfrom memory_pipeline import MemoryPipeline\nfrom memory_store import MemoryStore\n\n\ndef _configure_line_editing(readline_module: Any) -> None:\n    \"\"\"Enable the small set of libedit bindings used by the reference project.\"\"\"\n    readline_module.parse_and_bind(\"set bind-tty-special-chars off\")\n    readline_module.parse_and_bind(\"set input-meta on\")\n    readline_module.parse_and_bind(\"set output-meta on\")\n    readline_module.parse_and_bind(\"set convert-meta off\")\n\n\ntry:\n    import readline\n\n    _configure_line_editing(readline)\nexcept ImportError:\n    # Python builds without readline still run, but do not get\n...\n, \"run.interrupted\")\n                logger.emit(\n                    \"run.interrupted\",\n                    run[\"run_id\"],\n                    round=run[\"round\"],\n                    interruption_info=state.get(\"interruption_info\"),\n                    status=\"interrupted\",\n                )\n            except StateSaveError as exc:\n                print(f\"State Save Error: {exc}\", file=sys.stderr)\n        print(\"\\nSession interrupted.\", file=output)\n    except StateSaveError as exc:\n        exit_status = \"failed\"\n        print(f\"State Save Error: {exc}\", file=sys.stderr)\n        return 4\n    finally:\n        logger.emit(\"session.ended\", status=exit_status)\n    return 0\n\n\nif __name__ == \"__main__\":\n    import argparse\n\n    parser = argparse.ArgumentParser(description=\"V07 context-aware durable coding-agent runtime\")\n    parser.add_argument(\"--resume\", type=Path, help=\"resume a persisted V07 state file\")\n    args = parser.parse_args()\n    raise SystemExit(cli(resume_path=args.resume))\n\n[Full Tool Result: original_chars=104919; reference=/Users/mimi/Desktop/agentloop/v08_memory_system/tool_results/411d9ff1-5022-451a-95dd-a746ffc0e866/01a0c2dd66301e20af894c554cdfb011.txt]",
+          "tool_use_id": "01a0c2dd66301e20af894c554cdfb011",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "signature": "vtqzfxlzoe",
+          "thinking": "The read_file tool truncates. Let me use grep -n with context, or sed to read lines around 2158-2230.",
+          "type": "thinking"
+        },
+        {
+          "citations": null,
+          "text": "The read tool truncates the large file. Let me extract the target line ranges with sed.\n\n",
+          "type": "text"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd6aa3b94433432aca9d67a188",
+          "input": {
+            "command": "sed -n '2140,2240p' agent.py"
+          },
+          "name": "bash",
+          "toolset_name": null,
+          "type": "tool_use"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd6b3d2ee0371e543db06f93ae",
+          "input": {
+            "command": "grep -n \"recall\\|system_context\\|SYSTEM\\b\\|_SYSTEM\\|estimate_tokens\\|create_message\\|MemoryStore\\|memory\\.\" agent.py | head -60"
+          },
+          "name": "bash",
+          "toolset_name": null,
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "exit_code=0\n        except (TypeError, ValueError) as exc:\n            error = redact(str(exc))\n            logger.emit(\"llm.failed\", run_id, model=MODEL, round=round_number, attempt=attempt, latency_seconds=latency, error_type=\"PROTOCOL_ERROR\", error=error, message=error)\n            return _finish_agent_loop(\n                {\"status\": \"failed\", \"final_text\": \"\", \"rounds\": round_number, \"error\": \"PROTOCOL_ERROR\"},\n                runtime_state,\n                state_path,\n                logger,\n            )\n\n    return _finish_agent_loop(\n        {\"status\": \"failed\", \"final_text\": \"\", \"rounds\": max_rounds, \"error\": \"MAX_ROUNDS_EXCEEDED\"},\n        runtime_state,\n        state_path,\n        logger,\n    )\n\n\ndef _memory_pipeline(logger: EventLogger) -> MemoryPipeline:\n    return MemoryPipeline(\n        MemoryStore(MEMORY_DIR),\n        client.messages.create,\n        str(MODEL),\n        estimate_context_tokens,\n        logger,\n    )\n\n\ndef _memory_after_completed_run(\n    messages: list[dict[str, Any]],\n    runtime_state: dict[str, Any] | None,\n    state_path: Path | None,\n    logger: EventLogger,\n    run_id: str,\n) -> None:\n    \"\"\"Best-effort post-processing; never changes an already completed Run.\"\"\"\n    pipeline = _memory_pipeline(logger)\n    old_cursor = runtime_state.get(\"last_memory_message_index\") if runtime_state is not None else None\n    try:\n        processed = pipeline.extract_and_store(messages, old_cursor, run_id)\n        if runtime_state is not None:\n            runtime_state[\"last_memory_message_index\"] = processed[\"cursor\"]\n            try:\n                checkpoint(runtime_state, state_path, logger, \"memory.cursor_advanced\")\n            except Exception:\n                runtime_state[\"last_memory_message_index\"] = old_cursor\n                raise\n            logger.emit(\n                \"memory.cursor.advanced\",\n                run_id,\n                previous=old_cursor,\n                current=processed[\"cursor\"],\n            )\n    except Exception as exc:\n        logger.emit(\n            \"memory.extract.failed\",\n            run_id,\n            error_type=type(exc).__name__,\n            message=redact(str(exc)),\n            cursor_status=\"unchanged\",\n        )\n        return\n    pipeline.consolidate(run_id)\n\n\ndef run_once(\n    messages: list[dict[str, Any]],\n    user_text: str,\n    logger: EventLogger,\n    confirmation_fn: Callable[[str], str] = input,\n    *,\n    runtime_state: dict[str, Any] | None = None,\n    state_path: Path | None = None,\n    sleep_fn: Callable[[float], None] = time.sleep,\n) -> dict[str, Any]:\n    run_id = str(uuid.uuid4())\n    recall_context = \"\"\n    try:\n        recall_context = _memory_pipeline(logger).recall(user_text, run_id).system_context\n    except Exception as exc:\n        logger.emit(\"memory.recall.failed\", run_id, error_type=type(exc).__name__, message=redact(str(exc)))\n    request_system = SYSTEM + recall_context\n    messages.append({\"role\": \"user\", \"content\": user_text})\n    if runtime_state is not None:\n        runtime_state[\"messages\"] = messages\n        runtime_state[\"current_run\"] = {\"run_id\": run_id, \"status\": \"running\", \"round\": 1}\n        runtime_state[\"interruption_info\"] = None\n        checkpoint(runtime_state, state_path, logger, \"user.message_appended\")\n    logger.emit(\"run.started\", run_id, task=summarize(user_text), status=\"started\")\n    result = agent_loop(\n        messages,\n        logger,\n        run_id,\n        confirmation_fn=confirmation_fn,\n        runtime_state=runtime_state,\n        state_path=state_path,\n        sleep_fn=sleep_fn,\n        system=request_system,\n    )\n    if result[\"status\"] == \"completed\":\n        _memory_after_completed_run(messages, runtime_state, state_path, logger, run_id)\n",
+          "tool_use_id": "01a0c2dd6aa3b94433432aca9d67a188",
+          "type": "tool_result"
+        },
+        {
+          "content": "exit_code=0\n21:from memory_store import MemoryStore\n50:SYSTEM = (\n223:SUMMARY_SYSTEM = \"\"\"You compact coding-agent history. Return exactly these nine markdown sections:\n1593:    messages: list[dict[str, Any]], *, system: str = SYSTEM, tools: Any = TOOLS\n1695:    messages: list[dict[str, Any]], session_id: str, *, system: str = SYSTEM\n1773:    round_number: int, *, request_system: str = SYSTEM,\n1786:        summary_estimate = estimate_context_tokens(summary_messages, system=SUMMARY_SYSTEM, tools=[])\n1790:        response = client.messages.create(model=MODEL, system=SUMMARY_SYSTEM, messages=summary_messages, max_tokens=SUMMARY_MAX_TOKENS)\n1808:    system: str = SYSTEM,\n1833:                logger.emit(\"memory.cursor.reset\", run_id, reason=\"context.full_compacted\")\n1881:    system: str = SYSTEM,\n2160:        MemoryStore(MEMORY_DIR),\n2183:                checkpoint(runtime_state, state_path, logger, \"memory.cursor_advanced\")\n2188:                \"memory.cursor.advanced\",\n2195:            \"memory.extract.failed\",\n2216:    recall_context = \"\"\n2218:        recall_context = _memory_pipeline(logger).recall(user_text, run_id).system_context\n2220:        logger.emit(\"memory.recall.failed\", run_id, error_type=type(exc).__name__, message=redact(str(exc)))\n2221:    request_system = SYSTEM + recall_context\n",
+          "tool_use_id": "01a0c2dd6b3d2ee0371e543db06f93ae",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "signature": "mtzslurmvs",
+          "thinking": "Now I understand the caller side. Let me look at the `SYSTEM` constants and `estimate_context_tokens`, and the memory_store read_index/read/committed methods. Let me also check the README V08 memory section to understand design. Let me read the SYSTEM constant (line 50+) and the memory_store read methods.\n\nLet me read the relevant parts. I have enough to explain the call chain. Let me quickly look at memory_store's read_index and read to describe the storage layer, and estimate_context_tokens.",
+          "type": "thinking"
+        },
+        {
+          "citations": null,
+          "text": "Now let me look at the memory store read methods and the estimate_tokens function to complete the chain.\n\n",
+          "type": "text"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd7391cb7fd61b7f76cf821f23",
+          "input": {
+            "command": "grep -n \"def estimate_context_tokens\\|def read_index\\|def read\\b\\|def committed\\|def index_text\\|def __init__\\|def _list\\|def _path\\|def _read\" memory_store.py agent.py"
+          },
+          "name": "bash",
+          "toolset_name": null,
+          "type": "tool_use"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd74ff13ff1ed48877d1e84b8f",
+          "input": {
+            "command": "sed -n '50,90p' agent.py"
+          },
+          "name": "bash",
+          "toolset_name": null,
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "exit_code=0\nmemory_store.py:42:    def __init__(self, root: Path):\nmemory_store.py:192:    def read_index(self, *, validate_bodies: bool = False) -> list[dict[str, str]]:\nmemory_store.py:205:    def index_text(self) -> str:\nmemory_store.py:209:    def read(self, memory_id: str) -> dict[str, str]:\nmemory_store.py:221:    def committed(self) -> list[dict[str, str]]:\nagent.py:680:    def __init__(self, session_id: str, log_path: Path | None, stream: Any = None):\nagent.py:1592:def estimate_context_tokens(\n",
+          "tool_use_id": "01a0c2dd7391cb7fd61b7f76cf821f23",
+          "type": "tool_result"
+        },
+        {
+          "content": "exit_code=0\nSYSTEM = (\n    \"You are a concise coding agent. Use the available tools to inspect and modify \"\n    \"the workspace and to run commands when the task requires it. Paths are relative \"\n    \"to the workspace. Complete the user's stated task directly and stop exploring once \"\n    \"you have enough evidence to answer. Do not inspect parent directories, Git state, \"\n    \"environment files, or runtime source unless the user explicitly asks. When the user \"\n    \"names files to create, create them directly instead of repeatedly listing directories. \"\n    \"Use glob, grep, and read_file for discovery; use write_file and edit_file for file \"\n    \"changes; reserve bash for commands and tests. Run \"\n    \"Python tests with 'python3.12 -m pytest', then give the final answer as soon as the \"\n    \"requested result is verified. If a tool result contains PERMISSION_DENIED, do not \"\n    \"try another tool or workaround unless the user explicitly requested an alternative; \"\n    \"explain the denial and finish the current task. For complex multi-step work, make \"\n    \"todo_write the first tool call before discovery or mutation, especially for tasks involving \"\n    \"multiple files or distinct implementation and verification stages, even when the user \"\n    \"does not explicitly ask for a plan or Todo. Todo items must describe actual deliverable \"\n    \"work, not meta-work such as planning or breaking down the task. Use moderate granularity: \"\n    \"each item should be an independently actionable and verifiable stage. For multi-file \"\n    \"deliverables, use separate items when files or components can progress independently, \"\n    \"but do not split simple operations into many tiny todos. Every \"\n    \"todo_write call must contain the complete current todo list, with at most one item \"\n    \"in_progress. Explicitly call todo_write again to mark completed work; tool results do \"\n    \"not update todos automatically. When a Todo maintenance reminder appears, review the \"\n    \"real progress and normally update the complete TodoList before another non-Todo tool \"\n    \"call when the progress has changed. Report what you changed and what you verified.\"\n)\nTOOLS = [\n    {\n        \"name\": \"bash\",\n        \"description\": \"Run a shell command in the fixed workspace directory.\",\n        \"input_schema\": {\n            \"type\": \"object\",\n            \"properties\": {\n                \"command\": {\"type\": \"string\"},\n                \"timeout_seconds\": {\"type\": \"number\", \"minimum\": 0.1, \"maximum\": 30},\n            },\n            \"required\": [\"command\"],\n        },\n    },\n    {\n        \"name\": \"read_file\",\n",
+          "tool_use_id": "01a0c2dd74ff13ff1ed48877d1e84b8f",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "signature": "jwaniurrpg",
+          "thinking": "Let me read the memory_store read methods (lines 192-230) to complete the chain.",
+          "type": "thinking"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd79f3388eed9b83461d3629dd",
+          "input": {
+            "command": "sed -n '180,235p' memory_store.py"
+          },
+          "name": "bash",
+          "toolset_name": null,
+          "type": "tool_use"
+        },
+        {
+          "caller": null,
+          "id": "01a0c2dd7a9cb24032ce8ddb44e15643",
+          "input": {
+            "command": "sed -n '1592,1610p' agent.py"
+          },
+          "name": "bash",
+          "toolset_name": null,
+          "type": "tool_use"
+        }
+      ],
+      "role": "assistant"
+    },
+    {
+      "content": [
+        {
+          "content": "exit_code=0\n            if not ID_PATTERN.fullmatch(entry[\"name\"]):\n                raise MemoryStoreError(\"MEMORY.md name is not a safe stable identifier\")\n            if len(entry[\"description\"]) > MAX_SUMMARY_CHARS:\n                raise MemoryStoreError(\"MEMORY.md description exceeds its size limit\")\n            if entry[\"type\"] not in MEMORY_TYPES:\n                raise MemoryStoreError(\"MEMORY.md type is not supported\")\n            if entry[\"name\"] in seen:\n                raise MemoryStoreError(\"MEMORY.md contains a duplicate name\")\n            seen.add(entry[\"name\"])\n            entries.append(entry)\n        return entries\n\n    def read_index(self, *, validate_bodies: bool = False) -> list[dict[str, str]]:\n        self.ensure()\n        try:\n            entries = self._parse_index(self.index_path.read_text(encoding=\"utf-8\"))\n        except (OSError, UnicodeError) as exc:\n            raise MemoryStoreError(f\"cannot read MEMORY.md: {exc}\") from exc\n        if validate_bodies:\n            for entry in entries:\n                body = self.read(entry[\"name\"])\n                if body[\"id\"] != entry[\"name\"] or body[\"summary\"] != entry[\"description\"] or body[\"type\"] != entry[\"type\"]:\n                    raise MemoryStoreError(f\"index/body metadata mismatch for {entry['name']}\")\n        return entries\n\n    def index_text(self) -> str:\n        entries = self.read_index(validate_bodies=False)\n        return self._render_index(entries)\n\n    def read(self, memory_id: str) -> dict[str, str]:\n        if not isinstance(memory_id, str) or not ID_PATTERN.fullmatch(memory_id):\n            raise MemoryStoreError(\"memory id is unsafe\")\n        path = self.root / f\"{memory_id}.md\"\n        try:\n            entry = self._parse_body(path.read_text(encoding=\"utf-8\"))\n        except (OSError, UnicodeError) as exc:\n            raise MemoryStoreError(f\"cannot read memory {memory_id}: {exc}\") from exc\n        if entry[\"id\"] != memory_id:\n            raise MemoryStoreError(\"memory filename and embedded name differ\")\n        return entry\n\n    def committed(self) -> list[dict[str, str]]:\n        entries = self.read_index(validate_bodies=True)\n        return [{\n            \"id\": entry[\"name\"],\n            \"type\": entry[\"type\"],\n            \"title\": entry[\"description\"],\n            \"summary\": entry[\"description\"],\n            \"body\": self.read(entry[\"name\"])[\"body\"],\n        } for entry in entries]\n\n    def _atomic_write(self, path: Path, content: str) -> None:\n        path.parent.mkdir(parents=True, exist_ok=True)\n        temporary = path.with_name(f\".tmp-{path.name}-{os.getpid()}-{next(tempfile._get_candidate_names())}\")\n        try:\n            with temporary.open(\"x\", encoding=\"utf-8\") as handle:\n",
+          "tool_use_id": "01a0c2dd79f3388eed9b83461d3629dd",
+          "type": "tool_result"
+        },
+        {
+          "content": "exit_code=0\ndef estimate_context_tokens(\n    messages: list[dict[str, Any]], *, system: str = SYSTEM, tools: Any = TOOLS\n) -> int:\n    \"\"\"Estimate the complete request input with a stable conservative ratio.\"\"\"\n    payload = {\"system\": system, \"messages\": _jsonable(messages), \"tools\": tools}\n    chars = len(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(\",\", \":\")))\n    return (chars + 2) // 3\n\n\ndef _tool_result_text(block: dict[str, Any]) -> str | None:\n    content = block.get(\"content\")\n    return content if isinstance(content, str) else None\n\n\ndef _artifact_reference(session_id: str, tool_use_id: str) -> Path:\n    encoded_tool_id = quote(tool_use_id, safe=\"\")\n    if not encoded_tool_id or len(encoded_tool_id.encode(\"ascii\")) > 240:\n        raise ValueError(\"tool_use_id cannot be represented safely as an artifact filename\")\n    return TOOL_RESULTS_DIR / session_id / f\"{encoded_tool_id}.txt\"\n",
+          "tool_use_id": "01a0c2dd7a9cb24032ce8ddb44e15643",
+          "type": "tool_result"
+        }
+      ],
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "signature": "mkyjtetdnz",
+          "thinking": "I now have a full picture. Let me explain the V08 Memory Recall call chain following the user's preferred order (call chain & design intent first, then code details).",
+          "type": "thinking"
+        },
+        {
+          "citations": null,
+          "text": "# V08 Memory Recall 调用链解析\n\n## 一、调用链总览（先看整体路径）\n\n```\nrun_once(user_text)  [agent.py]\n   │\n   ├─ 构建 run_id\n   ├─ recall_context = _memory_pipeline(logger).recall(user_text, run_id).system_context\n   │                                 │  [agent.py:2218]\n   │                                 ▼\n   │                    MemoryPipeline.recall()  [memory_pipeline.py]\n   │                       │\n   │                       ├─ store.read_index()           ──► MemoryStore 磁盘扫描\n   │                       ├─ 有候选索引时走两条路径之一：\n   │                       │     (A) LLM 选择器: create_message(...SELECTOR_SYSTEM)\n   │                       │     (B) 兜底: _fallback_ids() 词干重叠打分\n   │                       ├─ 对选中 id 逐个 store.read() + 元数据校验\n   │                       └─ 渲染成 <PersistentMemory> 上下文串，返回 RecallResult\n   │\n   ├─ request_system = SYSTEM + recall_context   ← 从\"通用系统提示\"变为\"带记忆的系统提示\"\n   └─ agent_loop(..., system=request_system)     ← 记忆实际注入模型请求的位置\n```\n\n**One-line 总结**：用户的每一条新指令进来时，V08 先用 `recall()` 从持久化记忆仓库里选出\"与当前请求最相关的几条记忆\"，把它拼接到 SYSTEM 提示之后，作为每次 LLM 请求的固定上下文，然后才进入正常的 agent 主循环。\n\n---\n\n## 二、设计意图（为什么这样设计）\n\nV08 这套 Memory 系统的设计意图是一个**分层记忆管线**：\n\n- **Recall（取）**：每次新用户请求前运行，负责把**跨会话的持久知识**塞进请求上下文。这是整个管线的\"入口/读路径\"。\n- **Extract（存）**：每次 Run 完成后运行，增量分析新对话，把值得沉淀的持久事实写进仓库。\n- **Consolidate（合并）**：低频运行，去重、合并、裁剪，防止仓库无限膨胀。\n\n**Recall 在整个系统中的定位**：它不像 Extract/Store 那样事后跑，而是**同步、每轮必跑**（在 `run_once` 里、用户消息追加之前）。它决定了\"这次请求模型能看到哪些历史知识\"。三条关键设计取舍：\n\n1. **只注入\"索引里的持久条目\"，不注入对话历史** —— 对话历史由别处（compaction/summarization）负责；Recall 只负责长效知识。\n2. **选择器有\"双通道容错\"** —— 优先用 LLM 做相关性选择，失败时自动降级为本地词重叠兜底，保证 Recall 永不因模型错误而中断主流程。\n3. **失败即降级** —— 整个 Recall 被 try/except 包住，即使读不到仓库，也只影响上下文、不阻断任务（返回空的 `system_context`）。\n\n---\n\n## 三、代码细节（逐层展开）\n\n### 第 1 步：入口 `run_once`（agent.py:2213-2221）\n\n```python\nrecall_context = \"\"\ntry:\n    recall_context = _memory_pipeline(logger).recall(user_text, run_id).system_context\nexcept Exception as exc:\n    logger.emit(\"memory.recall.failed\", ...)   # 失败记日志，recall_context 保持 \"\"\nrequest_system = SYSTEM + recall_context\n```\n\n关键点：pipeline 是**每次调用现场构造**的（`_memory_pipeline` 每次都 new 一个 `MemoryPipeline`），不是单例。`recall()` 只返回 `RecallResult`，里面真正有用的就是 `.system_context`。随后用 `SYSTEM + recall_context` 覆盖 agent 循环里的 system 提示。\n\n### 第 2 步：`_memory_pipeline` 工厂（agent.py:2158-2163）\n\n```python\nreturn MemoryPipeline(\n    MemoryStore(MEMORY_DIR),\n    client.messages.create,     # create_message 注入\n    str(MODEL),                 # model\n    estimate_context_tokens,    # estimate_tokens 注入\n    logger,\n)\n```\n\n注入的四样东西中，`create_message` 就是实际的 LLM 调用句柄（所以 `recall` 里调用 `self.create_message` 就是在调 Claude/messages API），`estimate_context_tokens` 是 token 估算函数。\n\n### 第 3 步：`MemoryPipeline.recall()`（memory_pipeline.py:78-121）\n\n流程拆成四段：\n\n**(a) 读候选索引**\n```python\nentries = self.store.read_index(validate_bodies=False)\n```\n从仓库的 `MEMORY.md` 索引文件读出所有持久记忆的\"轻量目录\"（每条只含 `name`/`type`/`description`，不含正文）。`validate_bodies=False` 表示这一步只信任索引元数据，不做正文一致性校验（正文校验放到选中后）。\n\n**(b) 选择路径二选一**\n```python\npath = \"llm\"                     # 默认走 LLM 选择\nif not entries:                  # 仓库空 → 直接空选\n    selected = []\nelse:\n    response = self.create_message(\n        model=self.model, system=SELECTOR_SYSTEM,\n        messages=[{\"role\":\"user\",\"content\": json.dumps(request, ensure_ascii=False)}],\n        max_tokens=SELECTOR_MAX_TOKENS,\n    )\n    ...\n```\n- **LLM 路径**：把 `{\"request\": user_text, \"memory_index\": entries}` 连同 `SELECTOR_SYSTEM`（返回 `{\"ids\":[...]}`，0~5 个）喂给模型，让模型判断哪些记忆\"确实有用\"。\n- **合法性校验**：返回值必须是唯一键 `ids`、数组、每个 id 都在已知集合里、不能重复、不能超过 `MAX_RECALL=5`。\n- **兜底路径**：校验失败或 LLM 调用抛异常时，`path=\"fallback\"`，改用 `_fallback_ids()`。它用正则把用户文本拆成词，对每条记忆的 `name+description+type` 做集合交集打分，取重叠最多、最多 `MAX_RECALL` 条。\n\n**(c) 拉取正文 + 校验**\n```python\nfor memory_id in selected:\n    body = self.store.read(memory_id)          # 读单个 .md 正文\n    index_entry = next(...)                    # 找到对应索引条目\n    if body[\"id\"] != index_entry[\"name\"] or ...metadata mismatch:\n        raise MemoryStoreError(...)            # 索引与正文元数据不一致\n    bodies.append({**index_entry, \"body\": body[\"body\"]})\n    valid_selected.append(memory_id)\n```\n即**读正文 + 一致性校验**：正文里嵌的 id/summary/type 必须与索引一致，防止索引和正文漂移。单条失败只丢该条（`memory.recall.item_failed`），不影响其他条。\n\n**(d) 渲染上下文**\n```python\nrendered = \"\\n\\n\".join(f\"[{item['type']}:{item['name']}] {item['description']}\\n{item['body']}\" ...)\ncontext = \"\\n\\n<PersistentMemory>\\n\" + rendered + \"\\n</PersistentMemory>\"\n```\n把选中的记忆组装成 `<PersistentMemory>...</PersistentMemory>` 包裹、用 `[类型:ID] 描述\\n正文` 的格式，作为 `RecallResult.system_context` 返回。\n\n### 第 4 步：落地存储层 `MemoryStore`（memory_store.py）\n\n- `read_index()`：读 `MEMORY.md` 索引，含格式/安全校验（id 合法、描述长度、类型合法、无重复）。\n- `read(id)`：按 `{memory_id}.md` 读正文，校验文件名内嵌 id 是否一致。\n\n### 第 5 步：注入（agent.py:2221 → agent_loop）\n\n`request_system = SYSTEM + recall_context` 之后，这个 `request_system` 传入 `agent_loop(..., system=request_system)`，随后作为 `client.messages.create(system=...)` 的 system 参数发给模型。**这就是记忆最终生效的位置**——它出现在每次请求的系统提示末尾。\n\n---\n\n## 四、与写入路径的关系（补充）\n\nRecall 的数据来源是 Extract/Store 写出来的仓库：每次 Run 完成后 `_memory_after_completed_run` 调用 `extract_and_store`（增量分析新消息，`cursor` 记录上次处理位置），并由 `consolidate` 低频整理。所以顺序是 **写入(Extract+Store) → 仓库 → 读取(Recall) → 注入下一轮请求**，形成完整的记忆闭环。\n\n---\n\n## 五、关键点小结\n\n| 关注点 | 结论 |\n|---|---|\n| 触发时机 | 每个新用户请求在追加消息到 messages 之前，`run_once` 内同步调用 |\n| 入口 | `MemoryPipeline.recall()`（memory_pipeline.py） |\n| 选择策略 | 优先 LLM 相关性选择，异常自动降级为本地词重叠兜底 |\n| 输出 | `RecallResult.system_context`（一个 `<PersistentMemory>` 块）|\n| 注入位置 | `request_system = SYSTEM + recall_context`，随 system 发进每次 LLM 请求 |\n| 容错 | 全程 try/except，失败只丢记忆、不影响主流程 |\n| 与写入 | 数据来源是 Extract→Store 后的持久仓库，Consolidate 负责防膨胀 |\n\n如果你还想深入某一段（比如 `_fallback_ids` 的排序规则、或 `<PersistentMemory>` 渲染格式的由来），我可以继续展开。",
+          "type": "text"
+        }
+      ],
+      "role": "assistant"
+    }
+  ],
+  "schema_version": 1,
+  "session_id": "411d9ff1-5022-451a-95dd-a746ffc0e866",
+  "todos": [],
+  "updated_at": "2026-09-21T07:28:36.949843+00:00"
+}

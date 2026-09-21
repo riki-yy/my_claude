@@ -222,7 +222,7 @@ V08 复用现有 CLI/JSONL，新增或补强以下事件：
 
 以下 Case 面向根目录 `.env` 指向的真实 Anthropic-compatible 服务。模型措辞和具体 Candidate ID 允许变化，验收以 Memory 文件、state、实际请求次数及 CLI/JSONL 事件为准。
 
-本轮实现按要求没有运行真实 API Demo，因此以下内容是可执行的验收步骤、预期轨迹和可能结果，不是已通过声明。
+以下 Case 同时保留可复用的验收步骤、预期轨迹和可能结果。2026-09-21 已使用根目录 `.env` 配置的真实 Anthropic-compatible 服务（模型日志标识为 `deepseek-ai/DeepSeek-V4-Flash`）完成本节末尾记录的 V08 Memory 生命周期验收；真实结果与预期步骤分开记录，不把 Fake Model 或 fault injection 冒充为真实 API Demo。
 
 ### Case 1：跨 Session 召回项目测试命令
 
@@ -342,6 +342,30 @@ context.summary.completed
 
 可能结果：V07 request preflight 可能在 Main Agent 请求前已经执行 Full Compact，使 Extract 输入降到 96K 以下并正常运行。若要稳定验证超预算分支，应使用 Fake Model/确定性 estimate 注入；不能把未触发的真实 Case 写成超预算通过。
 
+### 2026-09-21 Real Demo Results
+
+本次按独立 Session 顺序执行用户偏好 Store、跨 Session Recall、临时信息过滤、语义重复过滤，以及 project Memory 的 Store → 新 Session Recall。验收依据为实际 Memory 文件、Session state、CLI 与 JSONL；没有手工伪造模型响应。
+
+```text
+V08 Real Demo Acceptance
+
+Demo 1: PASS
+Demo 2: PASS
+Demo 3: PASS（首次 Extract 非 JSON 失败；干净 Session 重跑通过）
+Demo 4: PASS
+Demo 5: PASS
+```
+
+- **Demo 1：稳定用户偏好 Extract / Store**：Session `807264c5-3017-448a-be8d-1dcdf4d95696` 的 Extract 生成 `explanation-order-preference`，类型为 `user`。正文 frontmatter、文件名 stem 与索引 `name / description / type` 一致，cursor 从 `null` 推进到 `1`。
+- **Demo 2：跨 Session Recall**：新 Session `411d9ff1-5022-451a-95dd-a746ffc0e866` 只有一次 Recall，Selector 从 1 个候选中选中 1 条。最终回答先讲调用链和设计意图，再讲代码细节；Demo 1 的完整正文没有写入 state/messages。该 Run 的 Extract 另生成了符合当前范围的 `project` Memory：`v08-memory-recall-architecture`。
+- **Demo 3：临时信息过滤**：首次 Session `22b0322f-cb2b-4210-8a08-e5cacd4f806f` 的 Extract 返回非 JSON，Runtime 记录 `memory.extract.failed`，未写 Memory 且 cursor 保持 `null`。相同输入在干净 Session `515eb237-9c95-4964-8e64-151b9d783aee` 重跑后返回 0 个 Candidate，无新增正文/索引/temp，cursor 从 `null` 推进到 `3`。
+- **Demo 4：语义重复**：Session `3dfdea20-33a6-4809-86c1-99cab2905f7f` 的 Selector 选中已有偏好，Extractor 返回 0 个 Candidate；没有新增第二条用户偏好，cursor 正常推进。
+- **Demo 5：project Memory**：Session A `c61ad3c6-4ef8-427c-ab27-87791aa01bd0` 写入 `pytest-command-convention`，类型为 `project`，正文与索引一致。全新 Session B `bd242548-636b-4e0b-bddc-6bb86717d796` Recall 一次、从 3 个候选中选中 1 条，并准确回答 `python -m pytest -q`；Recall block、frontmatter 和索引均未写入 state/messages。
+
+真实 Demo 还观察到两个不改变 Memory 验收结论的模型行为：Demo 3 重跑时 Main Agent 把“临时测试信息”误解为删除请求并请求执行 `rm`，权限被拒绝且未删除文件；Demo 5 Session B 在只询问测试命令时自行尝试运行命令。这两项属于 Main Agent 意图/工具决策，不是 V08 Memory 生命周期或 PLAN 偏差，本轮不扩展修复范围。
+
+Full Compact + cursor atomic reset、单 Candidate index failure rollback、partial batch 保留前序 commit，以及 Consolidate snapshot/rollback 仍由 Fake Model / fault injection 做确定性验证。本次没有声称这些故障分支已通过真实 API 触发。
+
 ## Development / Debugging Notes
 
 ### 记录 1：V07 baseline 与 V08 初始实现
@@ -367,8 +391,28 @@ context.summary.completed
 ### 记录 4：最终 Fake Model 验收
 
 - **命令**：`PYTHONDONTWRITEBYTECODE=1 python3.12 -m pytest -q -p no:cacheprovider`
-- **结果**：Candidate Store 失败语义收敛后为 `285 passed in 2.21s`。
-- **边界**：本轮没有读取 `.env`、没有访问网络、没有执行真实 API Demo，也没有进行 Git 操作。
+- **结果**：Real Demo 完成后的完整回归为 `285 passed in 1.20s`。
+- **边界**：该结果只来自 Fake Model 自动测试，不包含真实 API Demo；真实 Demo 结果单独记录，未执行 Git 操作。
+
+### 记录 5：真实 Extract 偶发返回非 JSON
+
+- **现象**：Demo 3 首次运行时 Main Agent 已 completed，但 Extract 在 `memory.extract.started` 后报 `memory model response is not valid JSON`；没有产生 Candidate，cursor 未推进。
+- **触发步骤**：在新 Session 输入 `scratch-memory-demo-9281.txt 只是这次临时测试使用，任务结束后没有长期价值。`，等待 Run 完成后的同步 Extract。
+- **实际运行轨迹**：Recall 选择 0 条 → Main Agent completed → Extract started → JSON 解析失败 → `memory.extract.failed(cursor_status=unchanged)` → Run 保持 completed。索引、正文和 temp 均未变化。
+- **预期行为**：真实 Extractor 应返回严格的 `{"memories":[]}`，使空 Candidate 成功并推进 cursor。
+- **根因**：当前日志按可观测性边界不保存完整 Extract 响应，因此无法证明首次响应的具体非法形态。使用完全相同的 active messages、索引和 Extract prompt 做受控诊断时，服务随后返回合法的 `{"memories":[]}`，说明问题至少具有真实模型输出非确定性，未发现 Store/cursor 代码错误。
+- **分类**：prompt / 外部模型结构化输出行为；Runtime 的失败与 cursor 处理符合 PLAN。
+- **最小解决方案**：本轮不放宽 JSON schema、不增加解析修复器，也不修改 PLAN。保留明确失败事件和旧 cursor，由后续成功 Run 保守重处理。
+- **修改范围**：仅记录真实问题与验收结果；未修改 Runtime。
+- **验证方法**：相同请求受控诊断返回严格空数组；随后在干净 Session 重跑，`candidate_count=0`、无 Store 写入、cursor 成功推进。
+- **最终状态**：Runtime failure semantics 正常；外部模型仍可能偶发不遵守 JSON-only prompt，作为 V08 已知限制保留。
+
+### 记录 6：Real Demo Acceptance
+
+- **真实 API**：Demo 1–5 均完成；详细 Session ID、持久化结果和事件见“2026-09-21 Real Demo Results”。
+- **PLAN 偏差**：未发现。没有为了 Demo PASS 修改 PLAN 或扩展 V09 机制。
+- **确定性故障验证**：Full Compact/cursor 原子 reset 与 Consolidate rollback 继续标记为 automated/fault-injection verification，不标记为真实 API Demo。
+- **Full pytest**：当前 `/Users/mimi/miniconda3/bin/python` 缺少 pytest，因此字面命令 `python -m pytest -q` 无法启动；使用项目既有 Python 3.12 环境运行 `PYTHONDONTWRITEBYTECODE=1 python3.12 -m pytest -q -p no:cacheprovider`，结果为 `285 passed in 1.20s`。
 
 ## Known Limitations
 
