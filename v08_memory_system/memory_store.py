@@ -147,6 +147,8 @@ class MemoryStore:
 
     @staticmethod
     def _render_index(entries: list[dict[str, str]]) -> str:
+        if not entries:
+            return INDEX_HEADER
         lines = [INDEX_HEADER.rstrip(), ""]
         for entry in sorted(entries, key=lambda item: item["name"]):
             lines.extend((
@@ -262,16 +264,28 @@ class MemoryStore:
 
         body_path = self.root / f"{entry['id']}.md"
         if body_path.exists():
-            orphan = self.read(entry["id"])
-            if not self._same_semantics(orphan, entry):
-                raise MemoryStoreError(f"orphan {entry['id']} conflicts with candidate")
-        else:
-            self._atomic_write(body_path, self._render_body(entry))
+            raise MemoryStoreError(f"uncommitted body already exists: {entry['id']}")
+        self._atomic_write(body_path, self._render_body(entry))
         index_entry = {"name": entry["id"], "description": entry["summary"], "type": entry["type"]}
         try:
             self._atomic_write(self.index_path, self._render_index(index + [index_entry]))
         except Exception as exc:
-            raise MemoryStoreError(f"index update failed; orphan body retained: {entry['id']}") from exc
+            rollback_error: Exception | None = None
+            try:
+                self._atomic_write(self.index_path, self._render_index(index))
+                body_path.unlink(missing_ok=True)
+                for prefix in (f".tmp-{body_path.name}-", f".tmp-{self.index_path.name}-"):
+                    for temporary in self.root.iterdir():
+                        if temporary.is_file() and temporary.name.startswith(prefix):
+                            temporary.unlink()
+                _fsync_directory(self.root)
+            except Exception as cleanup_exc:
+                rollback_error = cleanup_exc
+            if rollback_error is not None:
+                raise MemoryStoreError(
+                    f"index update failed and candidate rollback failed: {entry['id']}: {rollback_error}"
+                ) from exc
+            raise MemoryStoreError(f"index update failed; candidate body rolled back: {entry['id']}") from exc
         return "added"
 
     @staticmethod

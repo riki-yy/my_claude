@@ -137,7 +137,7 @@ Extractor 返回空 Candidate 列表也是成功处理，cursor 可以推进。�
 
 Memory 后处理是 best-effort：Extract、Store、cursor checkpoint 或 Consolidate 失败会产生事件，但不会把已经成功的 Main Agent Run 改成失败。
 
-## 原子 Store、orphan 与清理
+## 原子 Store、失败回滚与清理
 
 单条 Store 的提交顺序为：
 
@@ -156,10 +156,11 @@ Candidate
 Store 状态边界：
 
 - `.tmp-*`：未提交临时文件，可以清理；
-- 正式 `<id>.md` 存在但索引未引用：orphan，不参与 Recall；
 - 正文合法且 `MEMORY.md` 有一致引用：committed。
 
-如果正文已经成功落盘、索引更新失败，Runtime 保留 orphan，不生成“索引存在但正文缺失”的失效引用。下次相同 Candidate 重试时会验证一致 orphan 的 frontmatter，再完成索引提交；冲突 orphan 会明确失败。
+正文与对应索引项共同构成单条 Candidate 的提交边界。如果本次新建正文已经成功落盘、索引更新随后失败，Runtime 将当前 Store 判定为失败，先恢复 Store 前的索引，再删除本次新建正文及相关 `.tmp`；此前 committed 的正文与索引不受影响。若旧索引也无法恢复，则停止删除正文并明确报告 rollback failure，避免主动制造索引引用缺失正文。cursor 保持旧值，下一次成功 Run 后从旧 cursor 覆盖的 active history 重新 Extract、Validate 和 Store。
+
+进程在正文 atomic rename 后、索引提交或异常回滚前被强制终止，仍可能留下 crash orphan。它未 committed、不参与 Recall，只作为未提交残留清理，不用于补建索引或恢复 Candidate。
 
 ## Consolidate
 
@@ -206,15 +207,15 @@ V08 复用现有 CLI/JSONL，新增或补强以下事件：
 - cursor 初始值、增量 `N`、空 Candidate 推进、失败不推进及 Full Compact reset；
 - Extract 超预算不调用模型、不 Store、不推进 cursor；
 - 四种类型、字段、ID/路径、正文大小与重复/冲突校验；
-- `.tmp`、orphan、committed 边界，索引失败后的 orphan 重试；
+- `.tmp`、crash orphan、committed 边界，以及索引失败后的正文/temp 回滚；
 - partial commit 后重试时跳过已 committed Candidate 并完成剩余项；
 - Consolidate snapshot、完整候选验证及失败 rollback；
 - failed/interrupted Run 不 Extract，resume 正常完成后才 Extract。
 
-当前实际结果：V08 全量 Fake Model 自动测试 `281 passed`。
+当前实际结果：V08 全量 Fake Model 自动测试 `285 passed`。
 
 ```text
-281 passed in 2.30s
+285 passed in 2.21s
 ```
 
 ## 真实 API Demo Cases
@@ -298,7 +299,7 @@ Session C 输入不相关请求：
 
 预期：第一次生成一条 `project` Memory；第二次 Extract 可以返回空列表，或返回语义相同 Candidate 后被 Store 记为 `skipped`，不会产生重复正文。
 
-故障注入扩展：在两个 Candidate 的 Extract 响应中，让第一条索引提交成功、第二条索引更新失败。预期第一条保持 committed、cursor 不推进；恢复正常写入后再次完成一个成功 Run，Extract 会覆盖旧增量，第一条 dedup skip，第二条完成提交，最后才推进 cursor。
+故障注入扩展：在两个 Candidate 的 Extract 响应中，让第一条索引提交成功、第二条索引更新失败。预期第一条保持 committed，第二条本次新建正文和相关 temp 被回滚，cursor 不推进；恢复正常写入后再次完成一个成功 Run，Extract 会覆盖旧增量，第一条 dedup skip，第二条重新 Validate/Store，最后才推进 cursor。
 
 可能结果：真实模型可能为同一语义生成不同 ID 和差异较大的摘要/正文，使第一版简单语义去重不能识别。这属于 Known Limitation，需要保留证据，而不是增加 Embedding 或自行扩展 PLAN。
 
@@ -346,14 +347,15 @@ context.summary.completed
 ### 记录 1：V07 baseline 与 V08 初始实现
 
 - **继承范围**：复制 V07 Runtime、requirements 和两组自动测试到独立 `v08_memory_system/`，不修改 V01–V07 目录。
-- **新增模块**：`memory_store.py` 承担文件校验、原子提交、orphan 和 Consolidate；`memory_pipeline.py` 承担 Selector、Recall、Extract 与同步编排；`agent.py` 只加入最小插入点。
+- **新增模块**：`memory_store.py` 承担文件校验、原子提交、失败回滚、残留清理和 Consolidate；`memory_pipeline.py` 承担 Selector、Recall、Extract 与同步编排；`agent.py` 只加入最小插入点。
 - **初始结果**：V07 继承测试 `250 passed`。
 
-### 记录 2：orphan retry frontmatter 一致性
+### 记录 2：Candidate Store 索引失败后的事务式回滚
 
-- **现象**：正文成功写入后模拟索引失败会留下合法 orphan；下一次相同 Candidate 重试必须确认已落盘 frontmatter 与 Candidate 语义一致。
-- **修复**：一致 orphan 可继续完成轻量索引提交；冲突 orphan 明确失败。
-- **验证**：保留“index failure → orphan retained → retry committed”测试，并验证 committed Store 的索引与正文 `name / description / type` 完全一致。
+- **现象**：旧实现中正文成功写入、索引更新失败会保留 orphan；但 Extractor 看不到未被索引引用的正文，只能依赖下一轮非确定性地再次生成相同 ID，恢复链路不闭合。
+- **原因**：正文和 `MEMORY.md` 是两个顺序执行的原子替换，不是跨文件事务；旧实现把中间正文当作可复用恢复材料，却没有 orphan catalog、Candidate 持久化或确定性重放机制。
+- **修复**：索引更新失败时，单条 Candidate Store 失败并删除本次新建正文和相关 temp；只保留此前已经 committed 的条目。cursor 不推进，下一次成功 Run 后从旧 cursor 重新 Extract。强制终止产生的 crash orphan 仍只作为未提交残留清理。
+- **验证**：覆盖 body success + index failure 回滚、temp 清理、cursor unchanged、既有 committed Memory 不变、partial batch 保留前序提交，以及后续重新 Extract/Store 成功。
 
 ### 记录 3：SDK content block 的 Extract 复制
 
@@ -365,7 +367,7 @@ context.summary.completed
 ### 记录 4：最终 Fake Model 验收
 
 - **命令**：`PYTHONDONTWRITEBYTECODE=1 python3.12 -m pytest -q -p no:cacheprovider`
-- **结果**：轻量 Memory Index 收敛后为 `281 passed in 2.30s`。
+- **结果**：Candidate Store 失败语义收敛后为 `285 passed in 2.21s`。
 - **边界**：本轮没有读取 `.env`、没有访问网络、没有执行真实 API Demo，也没有进行 Git 操作。
 
 ## Known Limitations
@@ -374,7 +376,7 @@ context.summary.completed
 - deterministic fallback 只是词面重合，不理解同义词、跨语言语义或复杂指代。
 - 重复检查只使用稳定 ID，以及规范化后的同类型正文/摘要相等；没有 Embedding，措辞差异较大的语义重复可能同时存在，等待低频 Consolidate 处理。
 - Memory Store 没有多进程并发写锁；V08 假设单 Runtime 进程同步写入当前版本目录。
-- 单条 Store 的正文和索引是有顺序的两个原子文件替换，不是跨文件系统事务；索引失败可能留下可清理或可重试的 orphan，但不会留下索引指向缺失正文。
+- 单条 Store 的正文和索引是有顺序的两个原子文件替换，不是跨文件系统事务；可捕获的索引失败会回滚本次正文和 temp。进程在两次替换之间被强制终止仍可能留下需清理的 crash orphan，但不会留下索引指向缺失正文。
 - Consolidate 使用 snapshot + staging + rollback 提供第一版批量一致性，但不是数据库事务；进程在多文件整体替换的极窄窗口被强制终止时，需要依据 snapshot 人工检查恢复。
 - Recall context 不持久化。Main Agent Run 中断并 resume 时不会重新召回，也不会恢复当时的临时 Memory system context；这是 PLAN 明确规定的 V08 边界。
 - Extract 失败没有后台重试、独立 finalization workflow 或 operation ID；依赖旧 cursor 在后续成功 Run 后保守重处理。

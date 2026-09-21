@@ -41,7 +41,7 @@ from dotenv import load_dotenv
 ROOT_DIR = Path(__file__).resolve().parent.parent
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 STATE_DIR = Path(__file__).resolve().parent / "state"
-ARTIFACT_DIR = Path(__file__).resolve().parent / "artifacts"
+TOOL_RESULTS_DIR = Path(__file__).resolve().parent / "tool_results"
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 SYSTEM = (
     "You are a concise coding agent. Use the available tools to inspect and modify "
@@ -1593,7 +1593,7 @@ def _artifact_reference(session_id: str, tool_use_id: str) -> Path:
     encoded_tool_id = quote(tool_use_id, safe="")
     if not encoded_tool_id or len(encoded_tool_id.encode("ascii")) > 240:
         raise ValueError("tool_use_id cannot be represented safely as an artifact filename")
-    return ARTIFACT_DIR / session_id / f"{encoded_tool_id}.txt"
+    return TOOL_RESULTS_DIR / session_id / f"{encoded_tool_id}.txt"
 
 
 def _persist_tool_result(path: Path, content: str) -> None:

@@ -210,7 +210,7 @@ def test_candidate_validation_rejects_invalid_fields(store, change, match):
         store.store(candidate(**change))
 
 
-def test_index_failure_leaves_uncommitted_orphan_and_retry_commits(store, monkeypatch):
+def test_index_failure_rolls_back_new_body_and_temp_then_retry_commits(store, monkeypatch):
     real = store._atomic_write
     failed = False
 
@@ -218,18 +218,65 @@ def test_index_failure_leaves_uncommitted_orphan_and_retry_commits(store, monkey
         nonlocal failed
         if path == store.index_path and not failed:
             failed = True
+            (store.root / ".tmp-MEMORY.md-injected").write_text("partial", encoding="utf-8")
+            (store.root / ".tmp-unrelated.md-injected").write_text("unrelated", encoding="utf-8")
             raise OSError("index unavailable")
         return real(path, content)
 
     monkeypatch.setattr(store, "_atomic_write", fail_index)
-    with pytest.raises(MemoryStoreError, match="orphan body retained"):
+    with pytest.raises(MemoryStoreError, match="candidate body rolled back"):
         store.store(candidate())
-    assert (store.root / "project-tests.md").is_file()
+    assert not (store.root / "project-tests.md").exists()
+    assert not (store.root / ".tmp-MEMORY.md-injected").exists()
+    assert (store.root / ".tmp-unrelated.md-injected").exists()
     assert store.read_index() == []
 
     monkeypatch.setattr(store, "_atomic_write", real)
     assert store.store(candidate()) == "added"
     assert len(store.committed()) == 1
+
+
+def test_index_failure_preserves_previously_committed_memories(store, monkeypatch):
+    assert store.store(candidate("first")) == "added"
+    before_index = store.index_path.read_text(encoding="utf-8")
+    before_body = (store.root / "first.md").read_text(encoding="utf-8")
+    real = store._atomic_write
+
+    def fail_second_index(path, content):
+        if path == store.index_path and "- name: second" in content:
+            raise OSError("index unavailable")
+        return real(path, content)
+
+    monkeypatch.setattr(store, "_atomic_write", fail_second_index)
+    with pytest.raises(MemoryStoreError, match="candidate body rolled back"):
+        store.store(candidate("second", body="Second durable fact", summary="Second durable fact."))
+
+    assert store.index_path.read_text(encoding="utf-8") == before_index
+    assert (store.root / "first.md").read_text(encoding="utf-8") == before_body
+    assert not (store.root / "second.md").exists()
+    assert [item["name"] for item in store.read_index(validate_bodies=True)] == ["first"]
+
+
+def test_index_failure_after_replace_restores_old_index_before_body_rollback(store, monkeypatch):
+    assert store.store(candidate("first")) == "added"
+    real = store._atomic_write
+    failed = False
+
+    def fail_after_index_replace(path, content):
+        nonlocal failed
+        result = real(path, content)
+        if path == store.index_path and "- name: second" in content and not failed:
+            failed = True
+            raise OSError("directory fsync failed after replace")
+        return result
+
+    monkeypatch.setattr(store, "_atomic_write", fail_after_index_replace)
+    with pytest.raises(MemoryStoreError, match="candidate body rolled back"):
+        store.store(candidate("second", body="Second durable fact", summary="Second durable fact."))
+
+    assert [item["name"] for item in store.read_index(validate_bodies=True)] == ["first"]
+    assert (store.root / "first.md").exists()
+    assert not (store.root / "second.md").exists()
 
 
 def test_cleanup_distinguishes_temporary_orphan_and_committed(store):
@@ -316,6 +363,56 @@ def test_partial_store_failure_keeps_committed_item_and_cursor_cannot_advance(st
     with pytest.raises(MemoryStoreError, match="forced failure"):
         make_pipeline(store, scripted).extract_and_store([{"role": "user", "content": "facts"}], None, "run-1")
     assert [item["name"] for item in store.read_index()] == ["first"]
+
+
+def test_store_failure_keeps_runtime_cursor_unchanged(store, monkeypatch):
+    scripted = ScriptedMessages([response(json.dumps({"memories": [candidate()]}))])
+    pipeline = make_pipeline(store, scripted)
+    monkeypatch.setattr(agent, "_memory_pipeline", lambda _logger: pipeline)
+    state = agent.new_runtime_state("session-1")
+    state["messages"] = [
+        {"role": "user", "content": "old"},
+        {"role": "assistant", "content": [{"type": "text", "text": "done"}]},
+    ]
+    state["last_memory_message_index"] = 0
+    monkeypatch.setattr(store, "store", lambda _candidate: (_ for _ in ()).throw(MemoryStoreError("forced failure")))
+    logger = Logger()
+
+    agent._memory_after_completed_run(state["messages"], state, None, logger, "run-1")
+
+    assert state["last_memory_message_index"] == 0
+    assert any(event == "memory.extract.failed" and data["cursor_status"] == "unchanged" for event, _run, data in logger.events)
+
+
+def test_partial_batch_index_failure_keeps_first_commit_and_retry_completes(store, monkeypatch):
+    output = {"memories": [
+        candidate("first"),
+        candidate("second", body="Second durable fact", summary="Second durable fact."),
+    ]}
+    real = store._atomic_write
+    failed = False
+
+    def fail_second_index(path, content):
+        nonlocal failed
+        if path == store.index_path and "- name: second" in content and not failed:
+            failed = True
+            raise OSError("index unavailable")
+        return real(path, content)
+
+    monkeypatch.setattr(store, "_atomic_write", fail_second_index)
+    with pytest.raises(MemoryStoreError, match="candidate body rolled back"):
+        make_pipeline(store, ScriptedMessages([response(json.dumps(output))])).extract_and_store(
+            [{"role": "user", "content": "facts"}], None, "run-1"
+        )
+    assert [item["name"] for item in store.read_index(validate_bodies=True)] == ["first"]
+    assert not (store.root / "second.md").exists()
+
+    monkeypatch.setattr(store, "_atomic_write", real)
+    result = make_pipeline(store, ScriptedMessages([response(json.dumps(output))])).extract_and_store(
+        [{"role": "user", "content": "facts retried"}], None, "run-2"
+    )
+    assert result["outcomes"] == ["skipped", "added"]
+    assert [item["name"] for item in store.read_index(validate_bodies=True)] == ["first", "second"]
 
 
 def test_partial_store_retry_skips_committed_candidate_and_finishes_remaining(store):

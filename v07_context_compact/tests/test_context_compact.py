@@ -57,7 +57,7 @@ def context_runtime(monkeypatch, tmp_path):
     scripted = ScriptedMessages([])
     monkeypatch.setattr(agent, "client", SimpleNamespace(messages=scripted))
     monkeypatch.setattr(agent, "MODEL", "fake-model")
-    monkeypatch.setattr(agent, "ARTIFACT_DIR", tmp_path / "artifacts")
+    monkeypatch.setattr(agent, "TOOL_RESULTS_DIR", tmp_path / "tool_results")
     logger = agent.EventLogger("session-1", tmp_path / "events.jsonl", io.StringIO())
     state = agent.new_runtime_state("session-1")
     state["current_run"] = {"run_id": "run-1", "status": "running", "round": 1}
@@ -158,7 +158,7 @@ def test_tool_result_budget_persists_then_replaces_payload_and_checkpoints(conte
     assert "HEAD" in block["content"] and "TAIL" in block["content"]
     reference = block["content"].split("reference=", 1)[1].split("]", 1)[0]
     assert Path(reference).read_text() == raw
-    assert Path(reference) == agent.ARTIFACT_DIR / "session-1" / "tool-1.txt"
+    assert Path(reference) == agent.TOOL_RESULTS_DIR / "session-1" / "tool-1.txt"
     assert agent.load_state(state_path)["messages"] == messages
 
 
@@ -168,13 +168,13 @@ def test_deterministic_artifact_reuses_identical_content_and_rejects_conflict(co
     first = paired_result(first_raw, "stable-tool")
     state["messages"] = first
     agent.prepare_context(first, logger, "run-1", 1, state, state_path)
-    path = agent.ARTIFACT_DIR / "session-1" / "stable-tool.txt"
+    path = agent.TOOL_RESULTS_DIR / "session-1" / "stable-tool.txt"
     assert path.read_text(encoding="utf-8") == first_raw
 
     identical = paired_result(first_raw, "stable-tool")
     state["messages"] = identical
     agent.prepare_context(identical, logger, "run-2", 1, state, state_path)
-    assert list((agent.ARTIFACT_DIR / "session-1").glob("*.txt")) == [path]
+    assert list((agent.TOOL_RESULTS_DIR / "session-1").glob("*.txt")) == [path]
 
     conflicting = paired_result("b" * 17_001, "stable-tool")
     original = copy.deepcopy(conflicting)
@@ -187,10 +187,10 @@ def test_deterministic_artifact_reuses_identical_content_and_rejects_conflict(co
 
 def test_artifact_filename_encoding_is_deterministic_and_collision_free(context_runtime):
     assert agent._artifact_reference("session-1", "tool/a") == (
-        agent.ARTIFACT_DIR / "session-1" / "tool%2Fa.txt"
+        agent.TOOL_RESULTS_DIR / "session-1" / "tool%2Fa.txt"
     )
     assert agent._artifact_reference("session-1", "tool_a") == (
-        agent.ARTIFACT_DIR / "session-1" / "tool_a.txt"
+        agent.TOOL_RESULTS_DIR / "session-1" / "tool_a.txt"
     )
     with pytest.raises(ValueError, match="artifact filename"):
         agent._artifact_reference("session-1", "x" * 241)
@@ -242,7 +242,7 @@ def test_microcompact_is_pressure_driven(context_runtime, monkeypatch):
 
     assert messages == original
     assert not state_path.exists()
-    assert not list(agent.ARTIFACT_DIR.rglob("*.txt"))
+    assert not list(agent.TOOL_RESULTS_DIR.rglob("*.txt"))
 
 
 def test_microcompact_keeps_three_recent_and_stops_at_ratio_oldest_first(context_runtime, monkeypatch):
@@ -268,7 +268,7 @@ def test_microcompact_keeps_three_recent_and_stops_at_ratio_oldest_first(context
     assert contents[2] == "2" * 20
     assert contents[3:] == [str(number) * 20 for number in range(3, 6)]
     assert result == {"full_compact": False, "estimated_tokens": 12_800}
-    assert len(list(agent.ARTIFACT_DIR.rglob("*.txt"))) == 2
+    assert len(list(agent.TOOL_RESULTS_DIR.rglob("*.txt"))) == 2
     assert agent.load_state(state_path)["messages"] == messages
     agent.validate_llm_message_protocol(messages)
 
@@ -286,7 +286,7 @@ def test_microcompact_reuses_tool_budget_artifact(context_runtime, monkeypatch):
     for number in range(1, 4):
         messages += paired_result(str(number) * 20, f"tool-{number}")
     messages.append({"role": "assistant", "content": [{"type": "text", "text": "consumed"}]})
-    before_artifacts = set(agent.ARTIFACT_DIR.rglob("*.txt"))
+    before_artifacts = set(agent.TOOL_RESULTS_DIR.rglob("*.txt"))
 
     def fake_estimate(candidate, **_kwargs):
         first = agent._result_messages(candidate)[0][1][0]["content"]
@@ -297,7 +297,7 @@ def test_microcompact_reuses_tool_budget_artifact(context_runtime, monkeypatch):
 
     placeholder = agent._result_messages(messages)[0][1][0]["content"]
     assert placeholder == f"[Earlier tool result saved at {reference}]"
-    assert set(agent.ARTIFACT_DIR.rglob("*.txt")) == before_artifacts
+    assert set(agent.TOOL_RESULTS_DIR.rglob("*.txt")) == before_artifacts
 
     messages += paired_result("4" * 20, "tool-4")
     messages.append({"role": "assistant", "content": [{"type": "text", "text": "consumed again"}]})
@@ -315,7 +315,33 @@ def test_microcompact_reuses_tool_budget_artifact(context_runtime, monkeypatch):
     contents = [blocks[0]["content"] for _, blocks in agent._result_messages(messages)]
     assert contents[0] == f"[Earlier tool result saved at {reference}]"
     assert contents[1].startswith("[Earlier tool result saved at ")
-    assert len(set(agent.ARTIFACT_DIR.rglob("*.txt"))) == len(before_artifacts) + 1
+    assert len(set(agent.TOOL_RESULTS_DIR.rglob("*.txt"))) == len(before_artifacts) + 1
+
+
+def test_microcompact_reuses_legacy_absolute_artifact_reference(context_runtime, monkeypatch, tmp_path):
+    _, logger, state, state_path = context_runtime
+    raw = "legacy result"
+    legacy_path = tmp_path / "artifacts" / "session-1" / "tool-0.txt"
+    legacy_path.parent.mkdir(parents=True)
+    legacy_path.write_text(raw, encoding="utf-8")
+    budgeted = f"preview\n[Full Tool Result: original_chars={len(raw)}; reference={legacy_path.resolve()}]"
+    messages = paired_result(budgeted, "tool-0")
+    for number in range(1, 4):
+        messages += paired_result(str(number) * 20, f"tool-{number}")
+    messages.append({"role": "assistant", "content": [{"type": "text", "text": "consumed"}]})
+    state["messages"] = messages
+
+    def fake_estimate(candidate, **_kwargs):
+        first = agent._result_messages(candidate)[0][1][0]["content"]
+        return 12_800 if first.startswith("[Earlier tool result saved at ") else 16_000
+
+    monkeypatch.setattr(agent, "estimate_context_tokens", fake_estimate)
+    agent.prepare_context(messages, logger, "run-1", 1, state, state_path)
+
+    first = agent._result_messages(messages)[0][1][0]["content"]
+    assert first == f"[Earlier tool result saved at {legacy_path.resolve()}]"
+    assert legacy_path.read_text(encoding="utf-8") == raw
+    assert not agent.TOOL_RESULTS_DIR.exists()
 
 
 def test_microcompact_exhaustion_then_enters_full_compact(context_runtime, monkeypatch):
@@ -337,7 +363,7 @@ def test_microcompact_exhaustion_then_enters_full_compact(context_runtime, monke
     result = agent.prepare_context(messages, logger, "run-1", 1, state, state_path)
 
     assert result["full_compact"] is True
-    assert len(list(agent.ARTIFACT_DIR.rglob("*.txt"))) == 2
+    assert len(list(agent.TOOL_RESULTS_DIR.rglob("*.txt"))) == 2
     summarized = scripted.calls[0]["messages"]
     assert sum(
         (agent._tool_result_text(block) or "").startswith("[Earlier tool result saved at ")

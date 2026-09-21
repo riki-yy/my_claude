@@ -1176,54 +1176,283 @@ Compact 只服务当前 session；新 session 仍无法复用已验证的项目�
    - 预期最终效果：若真实服务可稳定复现，CLI/JSONL 显示一次 PTL recovery attempt 及最终结果，Round 与 `MAX_ROUNDS` 语义不变；无法稳定复现时如实记录未执行真实 PTL Demo，并以 Fake Model 测试作为机制证据。
    - 验收重点：验证 V06 error classification 衔接、有限 recovery、同 Round、失败终止和真实 Demo 证据不伪造。
 
-### V08：简单 Memory
+### V08：Memory System
 
 **要解决的问题**
 
-如何跨 session 保留少量稳定、可复用的信息，而不把完整历史永久注入上下文？
+如何用文件系统保存可跨 Session 复用的长期知识，并在不污染 conversation messages、不破坏 V07 Context Compact 与 V06 checkpoint/resume 语义的前提下，只为当前 User Request 召回少量相关内容？
 
-**本版目标**
+**本版目标与边界**
 
-- 保存项目约定、已验证命令、稳定架构事实和明确用户偏好。
-- 新 session 启动时加载小型 Memory。
-- 支持最小的确认、合并和去重。
+- Memory 是跨 Session 长期知识，不是当前 Session State。`state/`、messages、Todo、Run、interruption 继续承担 V06/V07 已有职责；Memory 不替代其中任何一项，也不保存当前任务进度。
+- 只保存真正值得在未来 Session 复用的信息，例如稳定用户偏好、已确认反馈、项目约定/架构事实和可复用参考信息。临时任务细节、当前 Todo、一次性路径、完整对话、大段源码和未经确认的推测直接忽略。
+- 不建立 `current_task` Memory 分支；当前工作仍由 messages、Todo、Run 和 checkpoint 表达。
+- V08 第一版同步执行 Recall、Extract、Store 和可选 Consolidate，不增加后台 worker、队列或异步任务。
+- 不实现或自动修改 `AGENTS.md`，不扩展到其他 Memory 架构。
+- 不实现 Vector DB、Embedding、RAG、Memory Graph、importance score、TTL/decay 或其他高级机制。
 
-**最小但完整设计**
+**文件系统 Memory Store**
 
-- 当前版本必须真实实现稳定信息的明确写入/确认、跨 session 加载、合并去重、容量控制和注入边界；不能把完整历史文件直接当作 Memory，也不能仅靠提示词声称“记住”。
-- Memory 使用简单本地文件；Markdown、JSON 或其他同等简单的表示是候选方案，在 V08 开始时根据真实数据形态和所需更新语义选择，不把文件格式预先规定为未来 Memory 架构。
-- 不使用 Embedding、向量库、RAG 或复杂自动召回。
-- 不保存临时任务进度、完整对话或大段源码。
-- 不提前设计自动召回或知识库，不等于可以省略本版稳定信息从写入到新 session 使用的完整、可验证生命周期。
+V08 固定使用当前版本目录中的简单文件系统 Store：
+
+```text
+v08_memory_system/
+└── memory/
+    ├── MEMORY.md
+    └── *.md
+```
+
+- `MEMORY.md` 只保存轻量 Selector catalog，不保存各条 Memory 正文；每条 Memory 正文单独存入一个 `memory/*.md` 文件。
+- 第一版 Memory 类型固定为 `user`、`feedback`、`project`、`reference`，不允许任意扩展类型。
+- 每条 Memory 至少具有稳定 `name`、固定 `type`、简短 `description` 和 Markdown 正文；单条正文文件的物理格式固定为下述 YAML frontmatter 加 Markdown 正文，其中 frontmatter 只包含 `name / description / type`。写入前必须校验必需字段、类型、name/文件名安全性、正文非空和大小边界，并对索引及现有正文做重复检查。
+
+**Memory Index 格式**
+
+`memory/MEMORY.md` 固定使用以下轻量 Markdown 索引格式：
+
+```yaml
+# Memory Index
+
+- name: explanation-order-preference
+  description: 用户偏好解释 Agent 代码时，先讲调用链和设计意图，再讲具体代码细节
+  type: user
+
+- name: project-test-command
+  description: 项目完整测试统一使用 python -m pytest -q
+  type: project
+```
+
+- 每条索引只允许并要求 `name / description / type`；不写入 `id / title / summary / created_at / updated_at`。
+- `name` 必须与对应 `memory/<name>.md` 文件名 stem 一致。
+- 索引的 `name / description / type` 必须与对应正文文件 frontmatter 完全一致。
+- `type` 只允许 `user / feedback / project / reference`。
+- `MEMORY.md` 只用于 Selector 候选选择，不保存正文。
+
+**单条 Memory 文件格式**
+
+每个 `memory/*.md` 文件固定使用 YAML frontmatter 加 Markdown 正文：
+
+```markdown
+---
+name: user-preference-tabs
+description: User prefers tabs for indentation
+type: user
+---
+
+User prefers using tabs rather than spaces for indentation.
+```
+
+- YAML frontmatter 必须位于文件开头，并由两个独立的 `---` 分隔。
+- V08 frontmatter 只允许并要求三个字段：`name`、`description`、`type`，不增加其他字段。
+- `name` 是该 Memory 的稳定 ID，同时决定正文文件名：`memory/<name>.md`。它必须满足既有 ID 和安全文件名约束。
+- `description` 是供 `MEMORY.md` 索引、Selector 和重复检查使用的一行简短摘要，对应本文其余位置所称的“简短标题/索引摘要”。
+- `type` 只允许 `user`、`feedback`、`project`、`reference`。
+- 第二个 `---` 后的非空内容是 Markdown 正文。
+- 缺失、重复、未知或非法 frontmatter 字段，非法 `type`，`name` 与文件名不一致，或空正文，均视为损坏或校验失败；该文件不得参与 Recall。
+- 单条写入使用同目录临时文件加原子替换；正文成功落盘后才更新 `MEMORY.md`。索引更新失败不得留下被索引但不存在的正文；实现阶段必须测试并明确处理可能的孤立正文。
+- V08 在 V06/V07 Session State 顶层增加唯一一个 Memory cursor：`last_memory_message_index`。它是当前 active `messages` 列表中，上一次 Extract + Store 全部成功处理后最后一条 model-visible message 的零基下标；初始值为 `null`。它不是新的 Memory workflow、phase、operation ID 或 transcript。
+- Memory 损坏、缺失或校验失败时不得把不可信内容注入模型；记录可观察错误，并让当前主 Run 在没有该条 Memory 的情况下继续。
+
+**最终调用链**
+
+```text
+新 User Request
+      ↓
+Memory Recall（每个新请求最多一次）
+      ↓
+当前 User Request + MEMORY.md 索引
+      ↓
+Memory Selector
+      ↓
+选择 0～5 条最相关 Memory
+      ↓
+校验并读取对应 memory/*.md
+      ↓
+构造仅属于本 Run 的临时 Memory System Context
+      ↓
+Main Agent Run
+      ↓
+多轮 LLM 与 Tool（沿用 V07 request preflight / Context Compact）
+      ↓
+最终 Assistant Response 不再包含 tool_use
+      ↓
+Memory Extract（每个完整 Run 一次）
+      ↓
+当前完整可见 active messages + MEMORY.md 索引 + 尾部 Extract Prompt
+      ↓
+由 last_memory_message_index 计算最近 N 条 model-visible messages
+      ↓
+只从最近 N 条提取真正值得跨 Session 保存的信息；更早历史仅辅助理解、消歧、去重
+      ↓
+分类为 user / feedback / project / reference
+      ↓
+字段校验 + 重复检查
+      ↓
+逐条原子写入 memory/*.md，再原子更新 MEMORY.md
+      ↓
+全部候选均成功处理后推进 last_memory_message_index；任一失败则不推进
+      ↓
+达到低频整理阈值？──否──→ Memory 后处理结束
+      ↓ 是
+Consolidate：去重 / 合并 / 剪枝
+      ↓
+创建 snapshot
+      ↓
+批量生成并校验候选 Store
+      ↓
+成功原子替换；失败 rollback
+      ↓
+Memory 后处理结束
+```
+
+**Recall / Selector / 临时注入**
+
+- Recall 以“新的 User Request”为生命周期边界，每个请求最多执行一次；不在 Agent Loop 每个 Round、Tool Result 后或 PTL retry 时重复召回。
+- Selector 输入仅为当前 User Request 与 `MEMORY.md` 索引。第一版使用一次 LLM 语义选择，允许在 Selector 调用失败时采用确定性的简单文本匹配 fallback，但不得使用向量检索。
+- Selector Prompt 明确要求只选择对当前请求确定有帮助的 Memory，不确定时不选，允许返回空列表，最多返回 5 个 ID，并禁止编造未知 ID。Runtime 必须拒绝未知、重复、越界或格式非法的选择结果，再逐条安全读取正文。
+- 召回正文只构造成当前 Run 的临时 system context；不得追加为 user/assistant message，也不得永久写入 conversation messages。
+- 当前 `SYSTEM` 固定常量演进为“基础 System Prompt + 本次 Recall Memory”的请求级构造。Recall 后形成的实际 system context 必须传给 V07 Context Budget 估算和本次 Main Agent 的模型调用，避免预算与真实请求不一致；它只保存在本次 `run_once()` 的内存调用链中，不新增持久化或恢复机制。
+- V07 Compact 继续只处理 active conversation context，不读取、总结、改写或持久化长期 Memory Store。Recall Memory 不进入 conversation messages；它只作为本次请求的 system context 参与预算。
+
+**Extract / Store / Consolidate**
+
+- Extract 只在一个 Run 已得到最终、非 `tool_use` 的 assistant response 后执行一次。模型/API/协议错误、权限等待、中断、`MAX_ROUNDS_EXCEEDED` 或其他未完整结束路径不执行 Extract。
+- Extract 不再主动裁剪“当前 Run 片段”。每次 Extract 都直接使用 Runtime 当时完整可见的 active `messages` 作为父会话历史；若 V07 已执行 Full Compact，则使用 Compact 后当前完整可见的 summary 与 recent raw messages。V08 不增加第二套 history slicing，不复制或持久化额外 transcript。
+- Extract 请求的固定结构为：`[当前完整可见 active messages] + [MEMORY.md 索引] + [尾部 Memory Extract Prompt]`。`MEMORY.md` 用于判断已有 Memory 是否已覆盖相同语义；它不并入 active conversation，也不改变 Main Agent 的 messages。
+- Extract 前用 `last_memory_message_index` 计算整数 `N`：cursor 为 `null` 时，`N` 等于当前全部 model-visible messages 数量；否则 cursor 所指消息本身不计入，从其下一条到当前末尾只统计 model-visible messages。V08 当前 active `messages` 均为模型可见的 User/Assistant 消息，其中可包含 Tool Results、Structured Summary 和 V06 recovery text；Runtime 内部状态与 Memory 索引不计入 `N`。
+- 尾部 Extract Prompt 必须包含以下范围约束；其余候选 schema、长期价值判断和输出格式要求可以继续追加，但不得削弱这段边界：
+
+  ```text
+  Analyze the most recent ~{N} model-visible messages above
+  and use them to update persistent memory.
+
+  You MUST only use content from the last ~{N} messages
+  as the source of new or updated memories.
+
+  Earlier conversation may only be used to:
+  - understand context
+  - resolve references
+  - avoid semantic duplicates
+  ```
+- Extractor 虽接收完整 active messages，但不接收 Recall 临时 system context 作为父会话消息。Recall 负责为 Main Agent 提供本次请求相关的长期知识；Extract 的 `MEMORY.md` 索引负责覆盖判断，两者不混为同一种输入或持久化路径。
+- 完整 active messages、索引和尾部 Prompt 都必须纳入 Extract 自身的请求预算估算。V08 不为 Extract 再次 slicing、递归 compact 或截断；如果完整请求超过 Extract 安全预算，本次 Extract 明确失败且 cursor 不推进，不影响已经完成的 Main Agent Run。后续 Main Agent 的 V07 Full Compact 可自然缩短 active messages。
+- Extract 输出是候选 Memory 列表；无值得长期复用的信息时必须返回空列表。候选只允许四种固定类型，并在 Store 前执行结构校验、内容大小限制和与既有 Memory 的重复/冲突检查。
+- 单条 Candidate Store 的提交顺序固定为：`Candidate → Validate → 写 memory/.tmp-<name>.md → flush/fsync/verify → atomic rename 为 memory/<name>.md → 构造 MEMORY.md.tmp → flush/fsync/verify → atomic replace MEMORY.md → committed`。一条 Memory 只有在正式正文存在且合法、并且 `MEMORY.md` 存在对应 `name` 时才是 committed。
+- 单条 Candidate 的正文与对应索引项共同构成提交边界。`.tmp` 是未提交临时文件；只有正式 `.md` 与 `MEMORY.md` 引用一致才是 committed。若正文已由本次 Store 新建而索引更新失败，当前 Candidate Store 必须失败；Runtime 先恢复本次 Store 之前的索引，再删除本次新建正文及相关 `.tmp`，不得删除或回退此前已 committed 的其他条目。若旧索引恢复失败，则不得继续删除正文而主动制造索引悬空引用，并应明确报告 rollback failure。进程在正文 atomic rename 后、索引提交前被强制终止仍可能留下 crash orphan；该文件未 committed、不参与 Recall，只能作为未提交残留清理，不作为补索引或恢复机制。
+- 只有本次 Extract 返回的全部候选都成功处理后，才把 `last_memory_message_index` 更新为当前最后一条 model-visible message 的下标并通过 V06 既有原子 checkpoint 保存；空候选也是成功处理，可以推进。语义重复且已被现有 committed Memory 覆盖的候选按成功 skip 计。任一候选 Validate/Store 未完成、Extract 失败或进程中断，cursor 都不推进。
+- cursor 不推进意味着下一次 Extract 会把旧 cursor 后未确认完成的消息与后续新增消息一起纳入最近 `N` 条。此前已经 committed 的部分候选保留；失败 Candidate 从 active history 重新 Extract、Validate 和 Store，已被 committed Memory 覆盖的候选依据稳定 ID、索引和正文语义成功 skip。该重试来自现有 cursor 语义，不复用 crash orphan，也不新增 durable Memory workflow 或 operation ID。
+- Extract、Store 或 Consolidate 的失败必须产生明确事件且不得把已经成功的 Main Agent Run 改成失败。Memory 后处理在 Main Agent 正常结束后同步尝试一次；V08 不增加 durable finalization workflow、恢复状态机或独立重放机制。
+- Consolidate 只在条目数或索引大小达到确定性阈值时低频触发，不在每轮、每个 Run 或每次写入后无条件执行。允许的动作只有去重、合并和剪枝。
+- Consolidate 是 committed Store 之后独立触发的低频批量整理：修改前必须创建可校验 snapshot；在临时位置生成完整候选 Store，完成结构、索引引用和文件一致性校验后再整体替换。任一步失败都 rollback 到 Consolidate 开始前（已经包含本轮成功 Store）的 committed Store；不得让刚成功写入的 Memory 消失。成功后按有限保留策略管理 snapshot。Consolidate 成败不改变已经完成的 Extract/Store cursor 推进结果。
+
+**与 V07 真实 Runtime 的最小侵入插入点**
+
+1. **新 User Request 进入 Main Agent 前的 Recall**
+   - 当前 V07 `run_once()` 追加 user message并调用 `agent_loop()`。V08 在新的 User Request 进入 Main Agent 前执行一次 Recall，把选中的正文拼入本次调用使用的 system context。
+   - Recall 结果只存在于当前进程和本次请求调用链，不写入 conversation messages、`state/` 或 checkpoint。若进程在 Main Agent Run 中断并由 V06 resume，V08 不额外恢复或重新召回 Memory；恢复继续遵循 V06 已有语义。
+
+2. **Main Agent Run 正常完成后的 Extract / Store / 可选 Consolidate**
+   - 沿用 V07 对最终无 `tool_use` assistant response 和 Run 完成的判断。只有 `agent_loop()` 正常返回 completed 后，`run_once()` 才同步调用一次 Extract / Store，并在达到阈值时调用 Consolidate。
+   - Memory 后处理是 Main Agent Run 之后的 best-effort 附加步骤。V08 只在 Session State 顶层增加 `last_memory_message_index`，复用既有 checkpoint 原子保存；不改变 `current_run`、`interruption_info`、resume phase 或 Main Agent 的完成判定，也不增加 Memory phase、幂等 operation ID 或 final response 后的恢复分支。
+
+3. **V07 Full Compact 对 cursor 的唯一修正**
+   - MicroCompact 与 Tool Result Budget 只原位缩减消息内容，不改变 active messages 的列表位置，因此 `last_memory_message_index` 保持不变。
+   - Full Compact 会用一条新的 Structured Summary 替换旧 prefix，使旧下标失去语义。Full Compact 成功提交时必须同时把 `last_memory_message_index` 重置为 `null`，并与 compact 后 messages 放在同一次 V07 checkpoint 中原子保存；Full Compact 失败回滚时 messages 与 cursor 都恢复原值。
+   - 下次成功 Run 后，Extract 接收 compact 后完整 active messages，`N` fallback 为当前全部 model-visible messages 数量；全部候选成功处理后，cursor 再定位到 compact 后当前消息列表末尾。宁可重复处理当前可见历史，也不能因旧下标失效而返回 `N=0` 或永久停摆。
+
+**与 V06/V07 的最小兼容边界**
+
+- Recall 每个新 User Request 最多执行一次，且只在 Main Agent 前执行；Agent 内部 Round、Tool Result、普通 retry 和 PTL Recovery 都不重新 Recall。
+- Recall Memory 只临时加入本次 system context，不写入 conversation messages，因此不改变 Anthropic role 顺序、`tool_use/tool_result` pairing 或 durable messages。
+- Recall 后的实际 system context 必须计入 V07 Context Budget，并用于对应的 Main Agent 模型调用；只调整已有预算函数接收实际 system 的方式，不建立新的 system 持久化层。
+- V07 Compact 继续只负责 active conversation context，不改变长期 Memory Store。MicroCompact 不影响 cursor 位置；Full Compact 与 cursor reset 使用同一原子 checkpoint，resume 只会看到 compact 前的 messages + 旧 cursor，或 compact 后的 messages + `null` cursor，不会看到交叉状态。
+- Extract 只在 Main Agent Run 正常完成后执行一次；失败、中断、权限等待或达到最大轮数均不执行。
+- V06 checkpoint/resume 不与 cursor 冲突：未完成 Run 不 Extract；resume 后同一 Run 正常完成时再依据已持久化 cursor 和当时 active messages 执行一次 Extract。Run completed checkpoint 与随后 cursor checkpoint 之间崩溃时 cursor 保持旧值，下一次成功 Extract 会保守重处理旧 cursor 后的可见消息。
+- Memory Extract/Store/Consolidate 失败不能撤销或改写已经成功的 Main Agent Run；Store 部分成功而 cursor 未推进时，已 committed 项通过既有索引/正文语义 dedup 成功 skip，未 committed 项重新处理。
+- `state/`、messages、Todo、Run、interruption 和 resume 保持 V06/V07 原有职责；只新增一个 Session 级整数/null cursor，并复用 checkpoint，不增加额外 transcript、Memory phase、后台任务或四层之外的机制。
+
+**Observability**
+
+- 复用现有 CLI/JSONL，至少记录 Recall started/completed/failed、Selector 路径（LLM/fallback）、索引候选数、选中数、Extract started/completed/failed、`N`、候选数、Store added/skipped/failed、cursor advanced/reset/unchanged，以及 Consolidate trigger/snapshot/commit/rollback。
+- 不记录完整 Memory 正文、完整 selector/extractor prompt 或敏感信息。
 
 **测试重点**
 
-- 加载、写入、合并和去重。
-- 损坏文件和容量限制。
-- 临时信息不能进入 Memory。
-- Memory 注入不能无限占用上下文。
+- 新 User Request 恰好 Recall 一次；多 Round、Tool Use、普通 retry 和 PTL Recovery 不重复 Recall；0 条及最多 5 条边界正确。
+- LLM Selector、确定性 fallback、非法/重复/未知 ID、正文缺失或损坏均有确定性 Fake Model 测试，且不使用向量能力。
+- Memory 只进入本次 system context，不进入 messages、checkpointed conversation 或 V07 Structured Summary；request estimate 与实际调用使用相同 system context。
+- Extract 始终接收 Run 结束时完整 active messages、`MEMORY.md` 索引和尾部 Prompt；`N` 只限制新/更新 Memory 的来源，更早历史只可用于理解、消歧和 dedup。验证不会额外 slicing，且完整请求超过安全预算时明确失败、不推进 cursor。
+- `last_memory_message_index` 初始 `null`、正常增量计数、cursor 本身不计入、空候选推进、任一 Candidate 失败不推进、下次合并旧增量与新增消息，以及部分 committed Candidate 重试时 dedup 均有测试。
+- 未完成、失败和中断 Run 不 Extract；resume 后正常完成才 Extract。Run completed 后、cursor checkpoint 前的崩溃保持旧 cursor，已成功 Main Agent Run 的状态不受影响。
+- 四种类型、字段、大小、路径和索引引用校验；重复候选跳过或合并；临时信息与无长期价值信息返回空候选，不建立 `current_task`。
+- 单条 Memory 文件严格验证 `name / description / type` YAML frontmatter、`name` 与文件名一致性、四种固定类型、未知或重复字段、缺失分隔符及空 Markdown 正文；损坏文件不得参与 Recall。
+- `MEMORY.md` 严格验证轻量 Markdown 索引只包含 `name / description / type`，拒绝旧 `id / title / summary / created_at / updated_at` 或其他额外字段，并验证索引与正文 frontmatter 一致。
+- 正文与索引的原子更新、损坏文件和部分写入失败均不产生被索引的缺失正文；可捕获的索引失败会删除本次新建正文和相关 `.tmp`。
+- `.tmp`、crash orphan、committed 三种状态及清理/Recall 边界明确；crash orphan 只作为未提交残留清理，不用于补索引；只有合法正文与索引引用同时存在才算 committed。
+- MicroCompact 保持 cursor；Full Compact 成功时 messages 与 cursor reset 同 checkpoint，失败时共同 rollback；reset 后 `N` 为 compact 后全部 model-visible messages，成功处理后重新定位末尾。
+- Consolidate 只在阈值达到时触发；去重、合并、剪枝成功路径与 snapshot/rollback 失败路径均保持 Store 一致，失败 rollback 到包含本轮成功 Store 的状态。
+- V06/V07 全部 regression tests 继续通过，特别验证 messages pairing、checkpoint/resume、Context Compact、PTL Recovery、Todo 和 interruption 语义未改变。
+
+**预计新增/修改文件**
+
+```text
+v08_memory_system/
+├── agent.py                    # 基于 V07；接入 Recall system context 与 Run 后 best-effort Extract
+├── memory_store.py             # 文件校验、索引、原子写入、去重、snapshot/rollback、Consolidate
+├── memory_pipeline.py          # Selector、Recall、Extract 的同步编排与固定 schema/prompt
+├── memory/
+│   └── MEMORY.md               # 空或最小初始索引；正文由运行时生成 *.md
+├── tests/
+│   ├── test_agent.py           # V07 回归与调用链集成
+│   └── test_memory.py          # Store、Recall、Extract、Consolidate 和故障测试
+├── README.md                   # 实现阶段记录设计、Demo 与真实调试证据
+└── requirements.txt            # 继承 V07；预期不增加 Vector/Embedding 依赖
+```
+
+文件拆分是预计边界；实施时若职责仍可在更少文件中清晰表达，可以合并，但不得削弱 Recall、Extract、Store、Consolidate、原子单条写入或 snapshot/rollback 的可测试生命周期。
+
+**本版明确不做**
+
+- 当前 Session State、current task Memory 或完整会话归档作为长期 Memory。
+- Vector DB、Embedding、RAG、Memory Graph、importance score、TTL/decay。
+- 自动修改 `AGENTS.md`。
+- 后台 worker、异步 Consolidate、durable Memory finalization workflow、通用知识库、其他 Memory 架构或未来扩展接口。
 
 **为什么需要 V09**
 
-各能力独立可用，不代表它们能够共同完成一次真实的软件工程任务。
+Memory 与既有能力边界清楚后，仍需在受控软件工程任务中验证 V01–V08 的组合闭环。
 
 **手动验收场景 / Demo Cases**
 
-1. **跨 session 保存并读取项目约定**
-   - 用户输入示例：在 session A 输入 `请把“本项目测试命令是 python3.12 -m pytest -q”作为稳定项目约定写入 Memory。`；启动全新 session B 后输入 `这个项目约定的测试命令是什么？`
-   - 预期运行轨迹：session A Memory 写入/确认 → session B 启动加载小型 Memory → LLM 回答，不需要旧完整对话。
-   - 预期最终效果：新 session 正确返回测试命令，Memory 中只有简短稳定事实。
-   - 验收重点：验证跨 session 的显式稳定记忆。
-2. **Memory 合并与去重**
-   - 用户输入示例：连续两次输入 `记住：所有版本都使用 Python 3.12。`，然后输入 `列出当前项目 Memory。`
-   - 预期运行轨迹：首次写入 → 第二次识别重复并合并/跳过 → 读取 Memory。
-   - 预期最终效果：该约定只出现一次，Memory 容量没有因重复输入增长。
-   - 验收重点：验证最小合并、去重和可观察写入。
-3. **临时任务信息不进入 Memory**
-   - 用户输入示例：`临时文件名是 scratch-123.txt，只在本次任务使用，不要写入 Memory。`
-   - 预期运行轨迹：正常 session 消息处理，不产生 Memory 写入；新 session 再询问该临时文件名。
-   - 预期最终效果：新 session 不声称记得 `scratch-123.txt`。
-   - 验收重点：验证 Memory 与当前 session 状态的边界。
+1. **跨 Session 按请求召回项目约定**
+   - 用户输入示例：Session A 完成一次确认项目测试命令的 Run；全新 Session B 输入 `这个项目约定的测试命令是什么？`
+   - 预期运行轨迹：Session A final response 后 Extract → `project` Memory 校验/写入/索引更新；Session B 新请求 Recall 一次 → Selector 选中该 ID → 临时 system 注入 → Main Agent 回答。
+   - 预期最终效果：无需旧 conversation 即可回答；Memory 正文单独存储，messages 中没有被永久追加的 Memory block。
+   - 验收重点：验证完整 Extract→Store→跨 Session Recall 生命周期。
+2. **0 条召回、最多 5 条与多 Round 不重复 Recall**
+   - 用户输入示例：提出一个与现有 Memory 无关、需要多次 Tool Use 的任务。
+   - 预期运行轨迹：Selector 返回 0 条或最多 5 条 → 多 Round Main Agent → Recall 事件只有一次。
+   - 预期最终效果：无关 Memory 不注入，任务正常完成，Context Budget 包含实际 run system。
+   - 验收重点：验证 relevance、数量和生命周期边界。
+3. **临时信息不保存、重复事实不增长**
+   - 用户输入示例：先说明 `scratch-123.txt 只用于本次任务`，再在另一个 Run 重复一条已存在的稳定项目事实。
+   - 预期运行轨迹：第一条 Extract 返回空候选；第二条候选在 Store 前命中重复并跳过/合并。
+   - 预期最终效果：不存在 `current_task` 条目，索引与正文数量不会因重复事实无界增长。
+   - 验收重点：验证长期价值判断、固定类型和去重。
+4. **Compact 边界与 Consolidate rollback**
+   - 前置条件：用 Fake Model/受控阈值确定性触发 Full Compact 与 Consolidate 替换失败；真实 Demo 只记录能够真实复现的部分。
+   - 用户输入示例：运行一个会触发 Full Compact 的长任务，并准备达到 Consolidate 阈值的 Store。
+   - 预期运行轨迹：Full Compact 原子替换 active conversation 并把 cursor 重置为 `null` → Main Agent 正常完成 → Extract 接收 compact 后完整 active messages 且 `N` 为其全部 model-visible messages → Store 全部成功后 cursor 重新定位末尾 → Consolidate 创建 snapshot；候选 Store 替换失败时 rollback。
+   - 预期最终效果：长期 Memory Store 不受 Compact 影响；Consolidate 失败后恢复到包含本轮成功 Store 的 committed 状态，已推进的 cursor 不回退。
+   - 验收重点：验证 V07 Full Compact 与 cursor 的原子边界、完整 Extract 输入，以及 Consolidate 自身必要的批量修改保护。
+
+**Known Limitations**
+
+- Recall context 不写入 checkpoint；Main Agent Run 中断后按 V06 恢复时不保证继续拥有中断前相同的 Recall 内容。
+- Extract 不维护独立完整 transcript；若 V07 Full Compact 已将本 Run 早期原文替换为 summary，Extract 只能基于 summary 与 recent raw context，可能漏掉早期可长期复用的细节。
+- `last_memory_message_index` 只对当前 active messages 列表有效；Full Compact 后必须重置并保守重处理 compact 后全部可见历史，因此可能产生重复候选，但 Runtime dedup 必须阻止重复 committed Memory 增长。
+- Extract 完整请求可能因 active messages + 索引 + Prompt 超过安全预算而失败；V08 不另做 slicing 或第二套 compact，cursor 保持不动，等待后续 V07 Full Compact 后再尝试。
+- Main Agent 正常完成后的 Memory 后处理不是独立 durable workflow；后处理期间进程崩溃时 cursor 不推进，后续成功 Run 会通过旧 cursor 保守重新覆盖尚未确认完成的范围。
 
 ### V09：单 Agent 软件工程闭环
 

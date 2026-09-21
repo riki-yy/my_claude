@@ -34,7 +34,7 @@ Context Estimate
 ## Tool Result Budget 与 MicroCompact
 
 - 单个 raw Tool Result active payload 上限为 16,000 字符；当前 Tool batch 总上限为 32,000 字符。
-- 缩减前，完整 UTF-8 内容以 flush/fsync、无覆盖原子落盘和回读确认写入 `artifacts/{session_id}/{encoded_tool_use_id}.txt`；`tool_use_id` 使用可逆 percent-encoding 形成安全文件名，不再使用 `run_id` 目录或 random UUID。active block 只保留有界首尾 preview、`original_chars` 和可读取 reference。
+- 缩减前，完整 UTF-8 内容以 flush/fsync、无覆盖原子落盘和回读确认写入 `tool_results/{session_id}/{encoded_tool_use_id}.txt`；`tool_use_id` 使用可逆 percent-encoding 形成安全文件名，不再使用 `run_id` 目录或 random UUID。active block 只保留有界首尾 preview、`original_chars` 和可读取 reference。旧 `artifacts/` 不迁移或删除，已有 checkpoint 中保存的绝对 reference 继续指向原文件；只有后续新持久化结果写入 `tool_results/`。
 - 同一 session 中相同 `tool_use_id` 与相同内容会直接复用已有 artifact；若内容不同，则视为 ID 唯一性或 Runtime correctness violation 并明确失败，绝不覆盖旧文件。`tool_result` block 与 `tool_use_id` 不变；持久化或 checkpoint 失败会恢复原 active messages。
 - MicroCompact 是 pressure-driven：Tool Result Budget 后的整体估算低于 16K 时不执行；达到 16K 才检查已经被后续模型交互消费的 Tool Results。当前 batch 和尚未消费的结果不参与处理。
 - `MICROCOMPACT_KEEP_RECENT_RESULTS=3` 按单条已消费 Tool Result 计数，优先保留最近 3 条 active 原文。保护窗口之前的结果不再设 4K 最小长度，从最老到最新逐条处理。
@@ -60,13 +60,13 @@ JSONL/CLI 新增 `context.budget`、`context.summary.started/completed`、`conte
 
 ## 自动测试与真实 API 验收
 
-Fake Model 测试覆盖估算、no-op、单结果/batch budget、artifact/reference、确定性文件名、同内容复用与不同内容冲突、MicroCompact 压力门槛、recent 3 保护、oldest → newest 顺序、0.8 停止目标、短结果、重复 preflight，以及合法 Full Compact、九段校验、失败回滚、pairing、resume、一次 PTL recovery 与持续 PTL 终止。当前实际结果：V07 全部测试 `249 passed`（其中 Context Compact 专项 `29 passed`）；V06 原目录 regression tests `220 passed`。
+Fake Model 测试覆盖估算、no-op、单结果/batch budget、artifact/reference、确定性文件名、同内容复用与不同内容冲突、旧 `artifacts/` 绝对 reference 兼容、MicroCompact 压力门槛、recent 3 保护、oldest → newest 顺序、0.8 停止目标、短结果、重复 preflight，以及合法 Full Compact、九段校验、失败回滚、pairing、resume、一次 PTL recovery 与持续 PTL 终止。当前实际结果：V07 全部测试 `250 passed`（其中 Context Compact 专项 `30 passed`）；V06 原目录 regression tests `220 passed`。
 
 ### Development / Debugging Notes
 
 真实 API Demo 使用 `read_file("agent.py")` 返回 2,374 行、约 96.3 KB 内容。首次运行错误触发 `CONTEXT_COMPACT_FAILED`。根因是 `_compact_result_block()` 原先通过 `"[Full Tool Result:" in raw` 这种正文子字符串判断识别 payload 是否已经缩减；由于 `agent.py` 源码本身恰好包含该 marker 字面量，原始 Tool Result 被误判为“已经 compact”，从而跳过 artifact 持久化和 active preview/reference 替换。最小修复是删除该冗余 marker 判断，保留原有类型与长度检查；重新验证后，完整 `read_file` 输出已写入约 98.6 KB 的 artifact，active Tool Result 缩减为 bounded preview/reference，Agent 可继续运行。
 
-后续真实 API Demo 在 Full Compact Summary call 报错 `Object of type TextBlock is not JSON serializable`，并终止为 `CONTEXT_COMPACT_FAILED`。根因是正常 Agent 请求保留了 Anthropic SDK 的 `TextBlock` / `ToolUseBlock` 对象，而旧实现又对 summary prefix 执行 `json.dumps(old)`。修复后 Summary internal call 直接复用经过合法 boundary 与 pairing 校验的 Messages representation，在历史末尾追加 summary instruction，不再把历史 JSON 序列化为字符串；boundary、recent suffix、九段 schema、阈值与事务语义均未改变。包含真实 SDK block 对象的回归测试已加入；Context Compact 专项 `29 passed`、V07 全量 `249 passed`、V06 regression `220 passed`。
+后续真实 API Demo 在 Full Compact Summary call 报错 `Object of type TextBlock is not JSON serializable`，并终止为 `CONTEXT_COMPACT_FAILED`。根因是正常 Agent 请求保留了 Anthropic SDK 的 `TextBlock` / `ToolUseBlock` 对象，而旧实现又对 summary prefix 执行 `json.dumps(old)`。修复后 Summary internal call 直接复用经过合法 boundary 与 pairing 校验的 Messages representation，在历史末尾追加 summary instruction，不再把历史 JSON 序列化为字符串；boundary、recent suffix、九段 schema、阈值与事务语义均未改变。包含真实 SDK block 对象的回归测试已加入；当前 Context Compact 专项 `30 passed`、V07 全量 `250 passed`、V06 regression `220 passed`。
 
 另一次真实 API Demo 中，Full Compact 已成功执行 `context.summary.started` 与 `context.summary.completed`，但所有候选最终均未达到严格的 `<8K` watermark，因而报错 `Full Compact did not reach target watermark at any legal boundary` 并保持原 durable state。最小 legal suffix 对应的最终 estimate 为约 8,245 tokens，仅比 target 高约 245 tokens。当前 Summary call 使用固定 `SUMMARY_MAX_TOKENS=4_000`，尚未依据 `target - fixed request overhead - raw suffix - safety margin` 为每个 boundary 动态计算并同时约束 Summary prompt 与 `max_tokens`，因此 target 命中能力仍较粗。
 
